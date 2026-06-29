@@ -7,6 +7,7 @@ from pathlib import Path
 from tkinter import filedialog, font, messagebox, ttk
 
 import matplotlib.pyplot as plt
+from PIL import Image, ImageTk
 
 from reduction_tool.io import find_fits_files, group_by_filter, scan_project
 from reduction_tool.models import FILTERS, ProjectPaths
@@ -20,14 +21,15 @@ from reduction_tool.processing import (
     run_reduction,
 )
 
-DARK_BG = "#080c18"
-PANEL_BG = "#101729"
-FIELD_BG = "#151d31"
-BORDER = "#26324d"
-TEXT = "#e7edf9"
-MUTED_TEXT = "#a8b3cf"
-ACCENT = "#6d5dfc"
-ACCENT_HOVER = "#7f72ff"
+DARK_BG = "#0b1020"
+PANEL_BG = "#0f172a"
+FIELD_BG = "#111827"
+BORDER = "#24304a"
+TEXT = "#e5ecff"
+MUTED_TEXT = "#9aa7c7"
+ACCENT = "#4f8cff"
+ACCENT_HOVER = "#6d5dfc"
+LOGO_DISPLAY_WIDTH = 420
 
 
 class ManualAlignmentWindow(tk.Toplevel):
@@ -256,18 +258,21 @@ class ReductionApp(tk.Tk):
         self.style.configure("TFrame", background=DARK_BG)
         self.style.configure("Panel.TFrame", background=PANEL_BG)
         self.style.configure("TLabel", background=DARK_BG, foreground=TEXT)
+        self.style.configure("Panel.TLabel", background=PANEL_BG, foreground=TEXT)
+        self.style.configure("Muted.TLabel", background=DARK_BG, foreground=MUTED_TEXT)
+        self.style.configure("Logo.TLabel", background=PANEL_BG, foreground=TEXT)
         self.style.configure("Preview.TLabel", background=PANEL_BG, foreground=TEXT)
-        self.style.configure("TLabelFrame", background=DARK_BG, foreground=TEXT, bordercolor=BORDER)
+        self.style.configure("TLabelFrame", background=DARK_BG, foreground=MUTED_TEXT, bordercolor=BORDER, borderwidth=1, relief="flat")
         self.style.configure("TLabelFrame.Label", background=DARK_BG, foreground=MUTED_TEXT)
-        self.style.configure("TEntry", fieldbackground=FIELD_BG, foreground=TEXT, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, insertcolor=TEXT)
-        self.style.configure("TCombobox", fieldbackground=FIELD_BG, foreground=TEXT, background=FIELD_BG, arrowcolor=TEXT, bordercolor=BORDER)
-        self.style.configure("Treeview", background=FIELD_BG, foreground=TEXT, fieldbackground=FIELD_BG, bordercolor=BORDER, rowheight=26)
-        self.style.configure("Treeview.Heading", background=PANEL_BG, foreground=TEXT, bordercolor=BORDER)
-        self.style.configure("TButton", background=FIELD_BG, foreground=TEXT, bordercolor=BORDER, padding=(10, 5))
-        self.style.map("TButton", background=[("active", BORDER), ("disabled", "#1b2235")], foreground=[("disabled", "#66708a")])
-        self.style.map("TCombobox", fieldbackground=[("readonly", FIELD_BG)], foreground=[("readonly", TEXT)])
-        self.style.configure("Primary.TButton", background=ACCENT, foreground="#ffffff", font=button_font, padding=(16, 8), bordercolor=ACCENT)
-        self.style.map("Primary.TButton", background=[("active", ACCENT_HOVER), ("disabled", "#252b3d")], foreground=[("disabled", "#79839c")])
+        self.style.configure("TEntry", fieldbackground=FIELD_BG, foreground=TEXT, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, insertcolor=TEXT, padding=(6, 5), relief="flat")
+        self.style.configure("TCombobox", fieldbackground=FIELD_BG, foreground=TEXT, background=FIELD_BG, arrowcolor=MUTED_TEXT, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, padding=(6, 5), relief="flat")
+        self.style.configure("Treeview", background=FIELD_BG, foreground=TEXT, fieldbackground=FIELD_BG, bordercolor=BORDER, borderwidth=0, relief="flat", rowheight=30)
+        self.style.configure("Treeview.Heading", background=PANEL_BG, foreground=MUTED_TEXT, bordercolor=BORDER, borderwidth=0, relief="flat")
+        self.style.configure("TButton", background=FIELD_BG, foreground=TEXT, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, padding=(14, 7), relief="flat")
+        self.style.map("TButton", background=[("active", "#1a2540"), ("disabled", "#151b2b")], foreground=[("disabled", "#64708d")])
+        self.style.map("TCombobox", fieldbackground=[("readonly", FIELD_BG)], foreground=[("readonly", TEXT)], background=[("readonly", FIELD_BG)])
+        self.style.configure("Primary.TButton", background=ACCENT, foreground="#ffffff", font=button_font, padding=(18, 10), bordercolor=ACCENT, relief="flat")
+        self.style.map("Primary.TButton", background=[("active", ACCENT_HOVER), ("disabled", "#1a2237")], foreground=[("disabled", "#66708a")])
 
     def maximize_window(self) -> None:
         try:
@@ -289,15 +294,18 @@ class ReductionApp(tk.Tk):
 
         try:
             if icon_png.exists():
-                self.app_icon_image = tk.PhotoImage(file=icon_png)
+                self.app_icon_image = ImageTk.PhotoImage(Image.open(icon_png).resize((256, 256), Image.Resampling.LANCZOS))
                 self.iconphoto(True, self.app_icon_image)
-        except tk.TclError:
+        except (tk.TclError, OSError):
             pass
 
         try:
             if logo_file.exists():
-                self.app_logo_image = tk.PhotoImage(file=logo_file)
-        except tk.TclError:
+                logo = Image.open(logo_file).convert("RGBA")
+                width = LOGO_DISPLAY_WIDTH
+                height = max(1, round(logo.height * (width / logo.width)))
+                self.app_logo_image = ImageTk.PhotoImage(logo.resize((width, height), Image.Resampling.LANCZOS))
+        except (tk.TclError, OSError):
             pass
 
     def _build_layout(self) -> None:
@@ -313,10 +321,10 @@ class ReductionApp(tk.Tk):
         self._add_folder_picker(header, 2, "Object folder", self.object_dir, self.choose_object_folder)
         self._add_folder_picker(header, 3, "Output folder", self.output_dir, self.choose_output_folder)
 
-        ttk.Label(header, text="Object name").grid(row=4, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(header, text="Object name", style="Panel.TLabel").grid(row=4, column=0, sticky="w", pady=(10, 0))
         ttk.Entry(header, textvariable=self.object_name).grid(row=4, column=1, sticky="ew", padx=8, pady=(10, 0))
 
-        ttk.Label(header, text="Alignment mode").grid(row=5, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(header, text="Alignment mode", style="Panel.TLabel").grid(row=5, column=0, sticky="w", pady=(10, 0))
         alignment_options = {
             "Automatic band alignment": ALIGNMENT_AUTOMATIC,
             "Manual band adjustment": ALIGNMENT_MANUAL,
@@ -333,16 +341,16 @@ class ReductionApp(tk.Tk):
         self.alignment_mode_picker.bind("<<ComboboxSelected>>", self.on_alignment_mode_selected)
 
         if hasattr(self, "app_logo_image"):
-            self.header_logo_image = self.app_logo_image.subsample(6, 6)
-            ttk.Label(header, image=self.header_logo_image, style="Preview.TLabel").grid(
+            self.header_logo_image = self.app_logo_image
+            ttk.Label(header, image=self.header_logo_image, style="Logo.TLabel").grid(
                 row=0,
                 column=3,
                 rowspan=6,
-                padx=(18, 0),
-                sticky="ne",
+                padx=(28, 12),
+                sticky="e",
             )
 
-        actions = ttk.Frame(self, padding=(16, 0, 16, 12))
+        actions = ttk.Frame(self, padding=(16, 14, 16, 14))
         actions.grid(row=1, column=0, sticky="ew")
         self.generate_button = ttk.Button(
             actions,
@@ -370,7 +378,7 @@ class ReductionApp(tk.Tk):
         log_frame = ttk.LabelFrame(body, text="Progress", padding=8)
         log_frame.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         log_frame.columnconfigure(0, weight=1)
-        ttk.Label(log_frame, textvariable=self.status).grid(row=0, column=0, sticky="w")
+        ttk.Label(log_frame, textvariable=self.status, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
 
         self._reset_table()
 
@@ -387,7 +395,7 @@ class ReductionApp(tk.Tk):
         command: callable,
     ) -> None:
         pady = (10, 0) if row else 0
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=pady)
+        ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w", pady=pady)
         ttk.Entry(parent, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=8, pady=pady)
         ttk.Button(parent, text="Browse", command=command).grid(row=row, column=2, pady=pady)
 
