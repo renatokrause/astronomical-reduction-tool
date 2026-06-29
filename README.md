@@ -22,6 +22,19 @@ my_project/
     *_R_*.fits
 ```
 
+The object folder can also use the target name, for example:
+
+```text
+my_project/
+  bias/
+  flat/
+  M104/
+  M8/
+  M83/
+```
+
+In this case, select the project folder and choose the desired target in the `Object folder` field.
+
 The tool creates this folder automatically:
 
 ```text
@@ -57,15 +70,16 @@ If the environment needs to be recreated, double-click `setup_environment.bat`.
 ## What The Program Does
 
 1. Finds FITS files in the `bias`, `flat` and `object` folders.
-2. Groups flats and object images by the `B`, `V`, `R` and `I` filters.
-3. Creates the master bias.
-4. Creates master flats for the `B`, `V` and `R` filters.
-5. Calibrates the object images with bias and flat correction.
-6. Uses one `V` image as the alignment reference.
-7. Aligns and stacks the images for each filter.
-8. Subtracts the sky background.
-9. Generates the final RGB image with `make_lupton_rgb`.
-10. Saves the PNG result in the `output` folder.
+2. Lets the user choose which object folder should be processed.
+3. Groups flats and object images by the `B`, `V`, `R` and `I` filters.
+4. Creates the master bias.
+5. Creates master flats for the `B`, `V` and `R` filters.
+6. Calibrates the object images with bias and flat correction.
+7. Uses one `V` image as the alignment reference.
+8. Aligns and stacks the images for each filter.
+9. Subtracts the sky background.
+10. Generates the final RGB image with `make_lupton_rgb`.
+11. Saves the PNG result in the `output` folder.
 
 ## Notes
 

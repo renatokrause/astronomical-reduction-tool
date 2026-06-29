@@ -52,10 +52,11 @@ def subtract_sky_background(image: np.ndarray) -> np.ndarray:
 def run_rgb_reduction(
     base_dir: Path,
     object_name: str = "object",
+    object_folder: str = "object",
     stretch: float = 5,
     q_value: float = 8,
 ) -> ReductionResult:
-    paths = ProjectPaths.from_base(base_dir)
+    paths = ProjectPaths.from_base(base_dir, object_folder=object_folder)
     paths.output_dir.mkdir(parents=True, exist_ok=True)
 
     inventory = scan_project(paths)

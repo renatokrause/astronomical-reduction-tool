@@ -5,7 +5,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from reduction_tool.io import scan_project
+from reduction_tool.io import find_fits_files, scan_project
 from reduction_tool.models import FILTERS, ProjectPaths
 from reduction_tool.plotting import save_rgb_image
 from reduction_tool.processing import run_rgb_reduction
@@ -19,6 +19,7 @@ class ReductionApp(tk.Tk):
         self.minsize(760, 500)
 
         self.base_dir = tk.StringVar()
+        self.object_folder = tk.StringVar(value="object")
         self.object_name = tk.StringVar(value="object")
         self.status = tk.StringVar(value="Select the project folder to begin.")
 
@@ -36,8 +37,13 @@ class ReductionApp(tk.Tk):
         ttk.Entry(header, textvariable=self.base_dir).grid(row=0, column=1, sticky="ew", padx=8)
         ttk.Button(header, text="Browse", command=self.choose_folder).grid(row=0, column=2)
 
-        ttk.Label(header, text="Object name").grid(row=1, column=0, sticky="w", pady=(10, 0))
-        ttk.Entry(header, textvariable=self.object_name).grid(row=1, column=1, sticky="ew", padx=8, pady=(10, 0))
+        ttk.Label(header, text="Object folder").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        self.object_folder_combo = ttk.Combobox(header, textvariable=self.object_folder)
+        self.object_folder_combo.grid(row=1, column=1, sticky="ew", padx=8, pady=(10, 0))
+        self.object_folder_combo.bind("<<ComboboxSelected>>", self.on_object_folder_selected)
+
+        ttk.Label(header, text="Object name").grid(row=2, column=0, sticky="w", pady=(10, 0))
+        ttk.Entry(header, textvariable=self.object_name).grid(row=2, column=1, sticky="ew", padx=8, pady=(10, 0))
 
         actions = ttk.Frame(self, padding=(16, 0, 16, 12))
         actions.grid(row=1, column=0, sticky="ew")
@@ -76,12 +82,40 @@ class ReductionApp(tk.Tk):
         folder = filedialog.askdirectory(title="Select the folder containing bias, flat and object")
         if folder:
             self.base_dir.set(folder)
+            self.refresh_object_folder_options()
             self.scan_files()
 
     def _project_paths(self) -> ProjectPaths:
         if not self.base_dir.get().strip():
             raise ValueError("Select a project folder.")
-        return ProjectPaths.from_base(Path(self.base_dir.get()))
+        return ProjectPaths.from_base(
+            Path(self.base_dir.get()),
+            object_folder=self.object_folder.get(),
+        )
+
+    def refresh_object_folder_options(self) -> None:
+        base_dir = Path(self.base_dir.get())
+        ignored = {"bias", "flat", "focus", "output", "dist", "__pycache__"}
+        candidates = []
+
+        if base_dir.exists():
+            for child in sorted(base_dir.iterdir()):
+                if not child.is_dir() or child.name.lower() in ignored:
+                    continue
+                if find_fits_files(child):
+                    candidates.append(child.name)
+
+        if not candidates:
+            candidates = ["object"]
+
+        self.object_folder_combo.configure(values=candidates)
+        if self.object_folder.get() not in candidates:
+            self.object_folder.set(candidates[0])
+            self.object_name.set(candidates[0])
+
+    def on_object_folder_selected(self, _event: tk.Event) -> None:
+        self.object_name.set(self.object_folder.get() or "object")
+        self.scan_files()
 
     def scan_files(self) -> None:
         try:
@@ -113,9 +147,14 @@ class ReductionApp(tk.Tk):
         try:
             base_dir = Path(self.base_dir.get())
             object_name = self.object_name.get().strip() or "object"
+            object_folder = self.object_folder.get().strip() or "object"
 
             self.set_status("Processing bias, flats, alignment and RGB composition...")
-            result = run_rgb_reduction(base_dir=base_dir, object_name=object_name)
+            result = run_rgb_reduction(
+                base_dir=base_dir,
+                object_name=object_name,
+                object_folder=object_folder,
+            )
 
             caption = f"Processed in Python\nObject: {object_name}"
             save_rgb_image(result.rgb, result.output_file, f"RGB Image - {object_name}", caption)
