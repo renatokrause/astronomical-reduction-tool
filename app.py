@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 from reduction_tool.io import scan_project
 from reduction_tool.models import FILTERS, ProjectPaths
 from reduction_tool.plotting import save_rgb_image
-from reduction_tool.processing import run_rgb_reduction
+from reduction_tool.processing import run_quick_rgb, run_rgb_reduction
 
 
 class ReductionApp(tk.Tk):
@@ -20,6 +20,7 @@ class ReductionApp(tk.Tk):
 
         self.base_dir = tk.StringVar()
         self.object_name = tk.StringVar(value="object")
+        self.quick_rgb_mode = tk.BooleanVar(value=True)
         self.status = tk.StringVar(value="Select the project folder to begin.")
 
         self._build_layout()
@@ -38,6 +39,12 @@ class ReductionApp(tk.Tk):
 
         ttk.Label(header, text="Object name").grid(row=1, column=0, sticky="w", pady=(10, 0))
         ttk.Entry(header, textvariable=self.object_name).grid(row=1, column=1, sticky="ew", padx=8, pady=(10, 0))
+
+        ttk.Checkbutton(
+            header,
+            text="Quick RGB mode: use science images only",
+            variable=self.quick_rgb_mode,
+        ).grid(row=2, column=1, sticky="w", padx=8, pady=(10, 0))
 
         actions = ttk.Frame(self, padding=(16, 0, 16, 12))
         actions.grid(row=1, column=0, sticky="ew")
@@ -73,7 +80,7 @@ class ReductionApp(tk.Tk):
         self.tree.column("#0", width=120, anchor="center")
 
     def choose_folder(self) -> None:
-        folder = filedialog.askdirectory(title="Select the folder containing bias, flat and object")
+        folder = filedialog.askdirectory(title="Select the project folder")
         if folder:
             self.base_dir.set(folder)
             self.scan_files()
@@ -114,10 +121,16 @@ class ReductionApp(tk.Tk):
             base_dir = Path(self.base_dir.get())
             object_name = self.object_name.get().strip() or "object"
 
-            self.set_status("Processing bias, flats, alignment and RGB composition...")
-            result = run_rgb_reduction(base_dir=base_dir, object_name=object_name)
+            if self.quick_rgb_mode.get():
+                self.set_status("Processing quick RGB from science images only...")
+                result = run_quick_rgb(base_dir=base_dir, object_name=object_name)
+                mode_caption = "Quick RGB mode"
+            else:
+                self.set_status("Processing bias, flats, alignment and RGB composition...")
+                result = run_rgb_reduction(base_dir=base_dir, object_name=object_name)
+                mode_caption = "Full calibration mode"
 
-            caption = f"Processed in Python\nObject: {object_name}"
+            caption = f"Processed in Python\nObject: {object_name}\n{mode_caption}"
             save_rgb_image(result.rgb, result.output_file, f"RGB Image - {object_name}", caption)
 
             self.set_status(f"Image saved to: {result.output_file}")
