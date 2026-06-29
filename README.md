@@ -8,6 +8,13 @@ Python desktop application for calibrating, aligning, stacking and generating RG
 
 This project was inspired by an earlier Colab workflow, then reorganized as a local desktop tool with a graphical interface.
 
+## Author
+
+- Primary author: [Eric Bairros Krause](https://github.com/ericBK26/)
+- Email: ericbairroskrause@gmail.com
+
+See [AUTHORS.md](AUTHORS.md) for authorship information.
+
 ## Supported Platforms
 
 Tested:
