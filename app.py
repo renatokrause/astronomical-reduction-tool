@@ -825,6 +825,8 @@ class ReductionApp(tk.Tk):
         brand_title_font.configure(size=20, weight="bold")
         brand_subtitle_font = default_font.copy()
         brand_subtitle_font.configure(size=12, weight="bold")
+        brand_author_font = default_font.copy()
+        brand_author_font.configure(size=9)
 
         self.style.configure(".", background=DARK_BG, foreground=TEXT)
         self.style.configure("TFrame", background=DARK_BG)
@@ -835,6 +837,7 @@ class ReductionApp(tk.Tk):
         self.style.configure("Logo.TLabel", background=PANEL_BG, foreground=TEXT)
         self.style.configure("BrandTitle.TLabel", background=PANEL_BG, foreground="#b9c7ea", font=brand_title_font)
         self.style.configure("BrandSubtitle.TLabel", background=PANEL_BG, foreground="#55c7ff", font=brand_subtitle_font)
+        self.style.configure("BrandAuthor.TLabel", background=PANEL_BG, foreground=MUTED_TEXT, font=brand_author_font)
         self.style.configure("Preview.TLabel", background=PANEL_BG, foreground=TEXT)
         self.style.configure("TLabelFrame", background=DARK_BG, foreground=MUTED_TEXT, bordercolor=BORDER, borderwidth=1, relief="flat")
         self.style.configure("TLabelFrame.Label", background=DARK_BG, foreground=MUTED_TEXT)
@@ -913,7 +916,7 @@ class ReductionApp(tk.Tk):
             ttk.Label(brand, image=self.header_icon_image, style="Logo.TLabel").grid(
                 row=0,
                 column=0,
-                rowspan=2,
+                rowspan=4,
                 sticky="e",
                 padx=(0, 18),
             )
@@ -924,6 +927,17 @@ class ReductionApp(tk.Tk):
             )
             ttk.Label(brand, text="Image Reduction Tool", style="BrandSubtitle.TLabel").grid(
                 row=1,
+                column=1,
+                sticky="nw",
+            )
+            ttk.Label(brand, text="Author: Eric Bairros Krause", style="BrandAuthor.TLabel").grid(
+                row=2,
+                column=1,
+                sticky="nw",
+                pady=(8, 0),
+            )
+            ttk.Label(brand, text="github.com/ericBK26 | ericbairroskrause@gmail.com", style="BrandAuthor.TLabel").grid(
+                row=3,
                 column=1,
                 sticky="nw",
             )
