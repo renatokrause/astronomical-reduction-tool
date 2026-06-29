@@ -103,7 +103,8 @@ In quick RGB mode:
 4. Aligns and stacks the `R`, `V` and `B` images.
 5. Subtracts the sky background.
 6. Generates a quick RGB composition.
-7. Saves the PNG result in the `output` folder.
+7. Saves one combined PNG result in the `output` folder.
+8. When complete matching sets are found, also saves one RGB PNG for each set, such as `cluster_ExpAst_1_quick_rgb.png` and `cluster_ExpAst_2_quick_rgb.png`.
 
 ## Notes
 
