@@ -15,7 +15,7 @@ from reduction_tool.processing import run_reduction
 class ReductionApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Astronomical Image Reduction")
+        self.title("Astronomical Image Reduction Tool")
         self.geometry("820x560")
         self.minsize(760, 500)
 
