@@ -947,7 +947,7 @@ class ReductionApp(tk.Tk):
                 borderwidth=0,
                 highlightthickness=0,
                 pady=0,
-            ).place(x=0, y=34)
+            ).place(x=0, y=39)
             tk.Label(
                 text_stack,
                 text="Author: Eric Bairros Krause",
@@ -957,7 +957,7 @@ class ReductionApp(tk.Tk):
                 borderwidth=0,
                 highlightthickness=0,
                 pady=0,
-            ).place(x=0, y=62)
+            ).place(x=0, y=72)
             author_link = tk.Label(
                 text_stack,
                 text="github.com/ericBK26 | ericbairroskrause@gmail.com",
@@ -969,7 +969,7 @@ class ReductionApp(tk.Tk):
                 pady=0,
                 cursor="hand2",
             )
-            author_link.place(x=0, y=76)
+            author_link.place(x=0, y=86)
             author_link.bind("<Button-1>", self.open_author_github)
 
         actions = ttk.Frame(self, padding=(16, 14, 16, 14))
