@@ -8,6 +8,19 @@ Python desktop application for calibrating, aligning, stacking and generating RG
 
 This project was inspired by an earlier Colab workflow, then reorganized as a local desktop tool with a graphical interface.
 
+## Supported Platforms
+
+Tested:
+
+- Windows 10/11
+
+Expected to work:
+
+- Linux with Python 3.11+ and Tkinter
+- macOS with Python 3.11+ and Tkinter
+
+The application is written in Python and uses a Tkinter desktop interface, so the source version is intended to be cross-platform. The Windows `.bat`, `.ps1` and shortcut files are Windows-specific. Linux users can use the `.sh` scripts included in this repository.
+
 ## Expected Folder Structure
 
 Select the folders used by the reduction:
@@ -51,7 +64,11 @@ my_project/
 
 ## How To Run
 
-Install Python 3.11 or newer. Then, inside this folder:
+Install Python 3.11 or newer.
+
+### Windows
+
+Inside this folder:
 
 ```powershell
 & "$env:LocalAppData\Programs\Python\Python312\python.exe" -m venv .venv
@@ -72,6 +89,30 @@ python app.py
 After the dependencies are installed, you can double-click `AIRT.bat`.
 
 If you want a Windows shortcut with the application icon, run `create_airt_shortcut.ps1` once and then open `AIRT.lnk`. If the environment needs to be recreated, double-click `setup_environment.bat`.
+
+### Linux
+
+Make sure Python 3.11+ and Tkinter are installed. On Debian/Ubuntu, Tkinter is usually installed with:
+
+```bash
+sudo apt install python3-tk
+```
+
+Then, inside this folder:
+
+```bash
+chmod +x setup_environment.sh AIRT.sh create_airt_desktop_entry.sh
+./setup_environment.sh
+./AIRT.sh
+```
+
+If you want a desktop launcher with the application icon, run:
+
+```bash
+./create_airt_desktop_entry.sh
+```
+
+This creates `AIRT.desktop` in the project folder. Some desktop environments require right-clicking the file and allowing it to launch.
 
 ## What The Program Does
 
