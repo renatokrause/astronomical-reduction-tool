@@ -45,17 +45,18 @@ class ReductionApp(tk.Tk):
 
         actions = ttk.Frame(self, padding=(16, 0, 16, 12))
         actions.grid(row=1, column=0, sticky="ew")
-        ttk.Button(actions, text="Scan files only", command=self.scan_files).pack(side="left")
-        ttk.Button(actions, text="Generate RGB image", command=self.start_reduction).pack(side="left", padx=8)
+        ttk.Button(actions, text="Generate RGB image", command=self.start_reduction).pack(side="left")
 
         body = ttk.Frame(self, padding=(16, 0, 16, 16))
         body.grid(row=2, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
 
-        self.tree = ttk.Treeview(body, columns=("flat", "object"), show="headings", height=8)
+        self.tree = ttk.Treeview(body, columns=("bias", "flat", "object"), show="headings", height=8)
+        self.tree.heading("bias", text="Bias")
         self.tree.heading("flat", text="Flats")
         self.tree.heading("object", text="Object")
+        self.tree.column("bias", width=120, anchor="center")
         self.tree.column("flat", width=120, anchor="center")
         self.tree.column("object", width=120, anchor="center")
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -84,7 +85,7 @@ class ReductionApp(tk.Tk):
         for item in self.tree.get_children():
             self.tree.delete(item)
         for band in FILTERS:
-            self.tree.insert("", "end", iid=band, values=(0, 0), text=band)
+            self.tree.insert("", "end", iid=band, values=(0, 0, 0), text=band)
         self.tree.configure(show="tree headings")
         self.tree.heading("#0", text="Filter")
         self.tree.column("#0", width=120, anchor="center")
@@ -93,11 +94,13 @@ class ReductionApp(tk.Tk):
         folder = filedialog.askdirectory(title="Select the bias folder")
         if folder:
             self.bias_dir.set(folder)
+            self.scan_files_if_ready()
 
     def choose_flat_folder(self) -> None:
         folder = filedialog.askdirectory(title="Select the flat folder")
         if folder:
             self.flat_dir.set(folder)
+            self.scan_files_if_ready()
 
     def choose_object_folder(self) -> None:
         folder = filedialog.askdirectory(title="Select the object folder")
@@ -106,11 +109,13 @@ class ReductionApp(tk.Tk):
             self.object_name.set(Path(folder).name)
             if not self.output_dir.get().strip():
                 self.output_dir.set(str(Path(folder).parent / "output"))
+            self.scan_files_if_ready()
 
     def choose_output_folder(self) -> None:
         folder = filedialog.askdirectory(title="Select the output folder")
         if folder:
             self.output_dir.set(folder)
+            self.scan_files_if_ready()
 
     def _project_paths(self) -> ProjectPaths:
         missing = []
@@ -141,13 +146,25 @@ class ReductionApp(tk.Tk):
             messagebox.showerror("File scan error", str(exc))
             return
 
-        for band, (flat_count, object_count) in inventory.counts_by_filter().items():
-            self.tree.item(band, values=(flat_count, object_count))
+        bias_count = len(inventory.bias)
+        for index, (band, (flat_count, object_count)) in enumerate(inventory.counts_by_filter().items()):
+            bias_value = bias_count if index == 0 else ""
+            self.tree.item(band, values=(bias_value, flat_count, object_count))
 
         self.status.set(
-            f"Scan complete: {len(inventory.bias)} bias file(s). "
+            f"Automatic scan complete: {bias_count} bias file(s). "
             "No images were processed yet."
         )
+
+    def scan_files_if_ready(self) -> None:
+        if all(
+            value.get().strip()
+            for value in (self.bias_dir, self.flat_dir, self.object_dir, self.output_dir)
+        ):
+            self.scan_files()
+        else:
+            self._reset_table()
+            self.status.set("Select all input and output folders to run the automatic scan.")
 
     def start_reduction(self) -> None:
         thread = threading.Thread(target=self.run_reduction, daemon=True)

@@ -72,7 +72,7 @@ If the environment needs to be recreated, double-click `setup_environment.bat`.
 ## What The Program Does
 
 1. Finds FITS files in the selected bias, flat and object folders.
-2. Counts the available files before processing.
+2. Automatically counts the available files when the selected folders are ready.
 3. Groups flats and object images by the `B`, `V`, `R` and `I` filters.
 4. Creates the master bias.
 5. Creates master flats for any available `B`, `V` and `R` filters.
@@ -88,5 +88,5 @@ If the environment needs to be recreated, double-click `setup_environment.bat`.
 - File names must identify the filter, for example `_B_`, `_V_`, `_R_`, or end with `B.FITS`, `V.FITS`, `R.FITS`.
 - `R`, `V` and `B` are mapped to red, green and blue. If only one or two filters are available, the missing channels are left empty.
 - The `I` filter is scanned, but is not yet used in the RGB composition.
-- `Scan files only` counts and classifies FITS files by folder and filter. It does not create masters, reduce images, align images or save output files.
+- The automatic scan counts and classifies FITS files by folder and filter. It does not create masters, reduce images, align images or save output files.
 - Individual visual inspection will be added in a future version.
