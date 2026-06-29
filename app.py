@@ -47,7 +47,8 @@ class ManualAlignmentWindow(tk.Toplevel):
         self.step = tk.DoubleVar(value=1.0)
         self.dx = tk.DoubleVar(value=0.0)
         self.dy = tk.DoubleVar(value=0.0)
-        self.status = tk.StringVar(value="Adjust a channel and update the preview.")
+        self.status = tk.StringVar(value="Adjust a channel, then press Space or Update preview.")
+        self.preview_is_stale = False
         self.preview_pil_image: Image.Image | None = None
         self.preview_image: ImageTk.PhotoImage | None = None
 
@@ -81,6 +82,7 @@ class ManualAlignmentWindow(tk.Toplevel):
         self.bind_all("<Shift-Right>", lambda _event: self.handle_key_nudge(10.0, 0.0))
         self.bind_all("<Shift-Up>", lambda _event: self.handle_key_nudge(0.0, 10.0))
         self.bind_all("<Shift-Down>", lambda _event: self.handle_key_nudge(0.0, -10.0))
+        self.bind_all("<space>", lambda _event: self.handle_update_preview())
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -149,7 +151,7 @@ class ManualAlignmentWindow(tk.Toplevel):
 
         actions = ttk.Frame(controls)
         actions.grid(row=1, column=4, columnspan=4, sticky="e", pady=(10, 0))
-        ttk.Button(actions, text="Update preview", command=self.update_current_channel).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Update preview (Space)", command=self.update_current_channel).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Reset channel", command=self.reset_channel).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Reset all", command=self.reset_all).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Save image", command=self.save_image).pack(side="left", padx=(0, 8))
@@ -208,6 +210,19 @@ class ManualAlignmentWindow(tk.Toplevel):
         self.store_current_channel()
         self.render_preview()
 
+    def handle_update_preview(self) -> str:
+        self.update_current_channel()
+        return "break"
+
+    def mark_preview_stale(self) -> None:
+        self.store_current_channel()
+        self.preview_is_stale = True
+        offsets = ", ".join(
+            f"{band}: x={values[0]:.2f}, y={values[1]:.2f}"
+            for band, values in self.offsets.items()
+        )
+        self.status.set(f"Pending manual offsets: {offsets}. Press Space or Update preview.")
+
     def handle_key_nudge(self, dx: float, dy: float) -> str:
         self.nudge(dx, dy)
         return "break"
@@ -215,7 +230,7 @@ class ManualAlignmentWindow(tk.Toplevel):
     def nudge(self, dx: float, dy: float) -> None:
         self.dx.set(round(float(self.dx.get()) + dx, 2))
         self.dy.set(round(float(self.dy.get()) + dy, 2))
-        self.update_current_channel()
+        self.mark_preview_stale()
 
     def reset_channel(self) -> None:
         band = self.selected_band.get()
@@ -224,18 +239,19 @@ class ManualAlignmentWindow(tk.Toplevel):
         self.offsets[band] = [0.0, 0.0]
         self.dx.set(0.0)
         self.dy.set(0.0)
-        self.render_preview()
+        self.mark_preview_stale()
 
     def reset_all(self) -> None:
         for band in self.offsets:
             self.offsets[band] = [0.0, 0.0]
         self.on_channel_selected()
-        self.render_preview()
+        self.mark_preview_stale()
 
     def render_preview(self) -> None:
         shifted = apply_channel_offsets(self.result.stacked, self.current_offsets())
         rgb = create_available_channel_rgb(shifted, stretch=5, q_value=8)
         self.preview_pil_image = ImageOps.flip(Image.fromarray(rgb).convert("RGB"))
+        self.preview_is_stale = False
         self.display_preview_image()
         offsets = ", ".join(
             f"{band}: x={values[0]:.2f}, y={values[1]:.2f}"
@@ -282,7 +298,7 @@ class ManualAlignmentWindow(tk.Toplevel):
         self.destroy()
 
     def cleanup(self) -> None:
-        for sequence in ("<Left>", "<Right>", "<Up>", "<Down>", "<Shift-Left>", "<Shift-Right>", "<Shift-Up>", "<Shift-Down>"):
+        for sequence in ("<Left>", "<Right>", "<Up>", "<Down>", "<Shift-Left>", "<Shift-Right>", "<Shift-Up>", "<Shift-Down>", "<space>"):
             self.unbind_all(sequence)
 
 
