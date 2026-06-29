@@ -36,12 +36,8 @@ def group_by_filter(files: list[Path]) -> dict[str, list[Path]]:
 
 
 def scan_project(paths: ProjectPaths) -> FileInventory:
-    object_files = find_fits_files(paths.object_dir)
-    if not object_files:
-        object_files = find_fits_files(paths.base_dir)
-
     return FileInventory(
         bias=find_fits_files(paths.bias_dir),
         flats=group_by_filter(find_fits_files(paths.flat_dir)),
-        objects=group_by_filter(object_files),
+        objects=group_by_filter(find_fits_files(paths.object_dir)),
     )

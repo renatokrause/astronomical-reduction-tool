@@ -6,7 +6,7 @@ This project was inspired by an earlier Colab workflow, then reorganized as a lo
 
 ## Expected Folder Structure
 
-For full calibration, select a project folder containing:
+Select a project folder containing:
 
 ```text
 my_project/
@@ -22,38 +22,12 @@ my_project/
     *_R_*.fits
 ```
 
-For quick RGB composition from science images only, use only the `object` folder:
-
-```text
-my_project/
-  object/
-    cluster_ExpAst_1_band_B.fits
-    cluster_ExpAst_1_band_R.fits
-    cluster_ExpAst_1_band_V.fits
-    cluster_ExpAst_2_band_B.fits
-    cluster_ExpAst_2_band_R.fits
-    cluster_ExpAst_2_band_V.fits
-```
-
-You can also select a folder that contains the science FITS files directly:
-
-```text
-my_project/
-  cluster_ExpAst_1_band_B.fits
-  cluster_ExpAst_1_band_R.fits
-  cluster_ExpAst_1_band_V.fits
-  cluster_ExpAst_2_band_B.fits
-  cluster_ExpAst_2_band_R.fits
-  cluster_ExpAst_2_band_V.fits
-```
-
 The tool creates this folder automatically:
 
 ```text
 my_project/
   output/
     object_reduced.png
-    object_quick_rgb.png
 ```
 
 ## How To Run
@@ -82,8 +56,6 @@ If the environment needs to be recreated, double-click `setup_environment.bat`.
 
 ## What The Program Does
 
-In full calibration mode:
-
 1. Finds FITS files in the `bias`, `flat` and `object` folders.
 2. Groups flats and object images by the `B`, `V`, `R` and `I` filters.
 3. Creates the master bias.
@@ -95,20 +67,9 @@ In full calibration mode:
 9. Generates the final RGB image with `make_lupton_rgb`.
 10. Saves the PNG result in the `output` folder.
 
-In quick RGB mode:
-
-1. Finds FITS files in the `object` folder.
-2. Groups object images by the `B`, `V`, `R` and `I` filters.
-3. Uses one `V` image as the alignment reference.
-4. Aligns and stacks the `R`, `V` and `B` images.
-5. Subtracts the sky background.
-6. Generates a quick RGB composition.
-7. Saves the PNG result in the `output` folder.
-
 ## Notes
 
 - File names must identify the filter, for example `_B_`, `_V_`, `_R_`, or end with `B.FITS`, `V.FITS`, `R.FITS`.
 - The first version generates RGB images from the `R`, `V` and `B` filters.
 - The `I` filter is scanned, but is not yet used in the RGB composition.
-- Quick RGB mode does not perform bias or flat calibration. It is useful when only science/object frames are available.
 - Individual visual inspection will be added in a future version.

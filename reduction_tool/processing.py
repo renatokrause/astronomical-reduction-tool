@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from astropy.visualization import make_lupton_rgb
 
-from .calibration import create_master_bias, create_master_flat, read_fits_data, reduce_image
+from .calibration import create_master_bias, create_master_flat, reduce_image
 from .io import scan_project
 from .models import ProjectPaths
 
@@ -41,18 +41,6 @@ def stack_band(
     for file_path in object_files:
         reduced = reduce_image(file_path, master_bias, master_flat)
         images.append(align_to_reference(reduced, reference))
-
-    return np.median(images, axis=0)
-
-
-def stack_science_band(object_files: list[Path], reference: np.ndarray) -> np.ndarray:
-    if not object_files:
-        raise ValueError("No object images were found for this filter.")
-
-    images = []
-    for file_path in object_files:
-        image = read_fits_data(file_path)
-        images.append(align_to_reference(image, reference))
 
     return np.median(images, axis=0)
 
@@ -96,37 +84,4 @@ def run_rgb_reduction(
     )
 
     output_file = paths.output_dir / f"{object_name}_reduced.png"
-    return ReductionResult(rgb=rgb, stacked=stacked, output_file=output_file)
-
-
-def run_quick_rgb(
-    base_dir: Path,
-    object_name: str = "object",
-    stretch: float = 5,
-    q_value: float = 8,
-) -> ReductionResult:
-    paths = ProjectPaths.from_base(base_dir)
-    paths.output_dir.mkdir(parents=True, exist_ok=True)
-
-    inventory = scan_project(paths)
-    missing_bands = [band for band in ("R", "V", "B") if not inventory.objects[band]]
-    if missing_bands:
-        missing = ", ".join(missing_bands)
-        raise ValueError(f"Quick RGB mode requires object images for these filters: {missing}.")
-
-    reference = read_fits_data(inventory.objects["V"][0])
-    stacked = {
-        band: stack_science_band(inventory.objects[band], reference)
-        for band in ("R", "V", "B")
-    }
-
-    rgb = make_lupton_rgb(
-        subtract_sky_background(stacked["R"]),
-        subtract_sky_background(stacked["V"]),
-        subtract_sky_background(stacked["B"]),
-        stretch=stretch,
-        Q=q_value,
-    )
-
-    output_file = paths.output_dir / f"{object_name}_quick_rgb.png"
     return ReductionResult(rgb=rgb, stacked=stacked, output_file=output_file)
