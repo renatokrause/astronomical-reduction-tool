@@ -13,7 +13,8 @@ from .models import ProjectPaths
 
 ALIGNMENT_NONE = "none"
 ALIGNMENT_AUTOMATIC = "automatic"
-ALIGNMENT_MODES = (ALIGNMENT_NONE, ALIGNMENT_AUTOMATIC)
+ALIGNMENT_MANUAL = "manual"
+ALIGNMENT_MODES = (ALIGNMENT_NONE, ALIGNMENT_AUTOMATIC, ALIGNMENT_MANUAL)
 
 
 @dataclass
@@ -103,6 +104,22 @@ def align_stacked_channels(
         metadata[band] = alignment
 
     return aligned, metadata
+
+
+def apply_channel_offsets(
+    stacked: dict[str, np.ndarray],
+    offsets: dict[str, tuple[float, float]],
+) -> dict[str, np.ndarray]:
+    from scipy.ndimage import shift as ndi_shift
+
+    shifted: dict[str, np.ndarray] = {}
+    for band, image in stacked.items():
+        dx, dy = offsets.get(band, (0.0, 0.0))
+        if dx == 0 and dy == 0:
+            shifted[band] = image
+        else:
+            shifted[band] = ndi_shift(image, shift=(dy, dx), order=1, mode="nearest")
+    return shifted
 
 
 def stack_band(
@@ -228,8 +245,8 @@ def run_reduction(
         for band in available_bands
     }
 
-    channel_alignment: dict[str, ChannelAlignment] = {}
-    if alignment_mode == ALIGNMENT_AUTOMATIC and len(stacked) > 1:
+    channel_alignment: dict[str, ChannelAlignment]
+    if alignment_mode in (ALIGNMENT_AUTOMATIC, ALIGNMENT_MANUAL) and len(stacked) > 1:
         stacked, channel_alignment = align_stacked_channels(stacked, reference_band)
     else:
         channel_alignment = {

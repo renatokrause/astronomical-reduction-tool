@@ -1,14 +1,211 @@
 from __future__ import annotations
 
+import tempfile
 import threading
 import tkinter as tk
-from tkinter import filedialog, font, messagebox, ttk
 from pathlib import Path
+from tkinter import filedialog, font, messagebox, ttk
+
+import matplotlib.pyplot as plt
 
 from reduction_tool.io import find_fits_files, group_by_filter, scan_project
 from reduction_tool.models import FILTERS, ProjectPaths
 from reduction_tool.plotting import save_rgb_image
-from reduction_tool.processing import ALIGNMENT_AUTOMATIC, ALIGNMENT_NONE, run_reduction
+from reduction_tool.processing import (
+    ALIGNMENT_AUTOMATIC,
+    ALIGNMENT_MANUAL,
+    ALIGNMENT_NONE,
+    apply_channel_offsets,
+    create_available_channel_rgb,
+    run_reduction,
+)
+
+
+class ManualAlignmentWindow(tk.Toplevel):
+    def __init__(self, parent: "ReductionApp", result: object) -> None:
+        super().__init__(parent)
+        self.parent = parent
+        self.result = result
+        self.title("Manual band alignment")
+        self.geometry("980x760")
+        self.minsize(860, 620)
+        self.configure_app_icon()
+
+        self.available_bands = [band for band in ("R", "V", "B") if band in result.stacked]
+        self.offsets = {band: [0.0, 0.0] for band in self.available_bands}
+        self.selected_band = tk.StringVar(value=self.available_bands[0] if self.available_bands else "")
+        self.step = tk.DoubleVar(value=1.0)
+        self.dx = tk.DoubleVar(value=0.0)
+        self.dy = tk.DoubleVar(value=0.0)
+        self.status = tk.StringVar(value="Adjust a channel and update the preview.")
+        self.preview_tempdir = tempfile.TemporaryDirectory()
+        self.preview_file = Path(self.preview_tempdir.name) / "manual_alignment_preview.png"
+        self.preview_image: tk.PhotoImage | None = None
+
+        self._build_layout()
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.bind("<Left>", lambda _event: self.nudge(-self.step.get(), 0.0))
+        self.bind("<Right>", lambda _event: self.nudge(self.step.get(), 0.0))
+        self.bind("<Up>", lambda _event: self.nudge(0.0, self.step.get()))
+        self.bind("<Down>", lambda _event: self.nudge(0.0, -self.step.get()))
+        self.bind("<Shift-Left>", lambda _event: self.nudge(-10.0, 0.0))
+        self.bind("<Shift-Right>", lambda _event: self.nudge(10.0, 0.0))
+        self.bind("<Shift-Up>", lambda _event: self.nudge(0.0, 10.0))
+        self.bind("<Shift-Down>", lambda _event: self.nudge(0.0, -10.0))
+        self.render_preview()
+        self.focus_set()
+        self.grab_set()
+
+    def configure_app_icon(self) -> None:
+        try:
+            if hasattr(self.parent, "app_icon_image"):
+                self.iconphoto(True, self.parent.app_icon_image)
+        except tk.TclError:
+            pass
+
+    def _build_layout(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        preview_frame = ttk.Frame(self, padding=12)
+        preview_frame.grid(row=0, column=0, sticky="nsew")
+        preview_frame.columnconfigure(0, weight=1)
+        preview_frame.rowconfigure(0, weight=1)
+
+        self.preview_label = ttk.Label(preview_frame, anchor="center")
+        self.preview_label.grid(row=0, column=0, sticky="nsew")
+
+        controls = ttk.Frame(self, padding=(12, 0, 12, 12))
+        controls.grid(row=1, column=0, sticky="ew")
+        for column in range(8):
+            controls.columnconfigure(column, weight=0)
+        controls.columnconfigure(7, weight=1)
+
+        ttk.Label(controls, text="Channel").grid(row=0, column=0, sticky="w")
+        channel_picker = ttk.Combobox(
+            controls,
+            state="readonly",
+            width=8,
+            values=tuple(self.available_bands),
+            textvariable=self.selected_band,
+        )
+        channel_picker.grid(row=0, column=1, sticky="w", padx=(6, 18))
+        channel_picker.bind("<<ComboboxSelected>>", self.on_channel_selected)
+
+        ttk.Label(controls, text="Step").grid(row=0, column=2, sticky="w")
+        ttk.Spinbox(controls, from_=0.1, to=50.0, increment=0.5, width=7, textvariable=self.step).grid(
+            row=0,
+            column=3,
+            sticky="w",
+            padx=(6, 18),
+        )
+
+        ttk.Label(controls, text="X").grid(row=0, column=4, sticky="w")
+        ttk.Spinbox(controls, from_=-500.0, to=500.0, increment=0.5, width=8, textvariable=self.dx).grid(
+            row=0,
+            column=5,
+            sticky="w",
+            padx=(6, 10),
+        )
+        ttk.Label(controls, text="Y").grid(row=0, column=6, sticky="w")
+        ttk.Spinbox(controls, from_=-500.0, to=500.0, increment=0.5, width=8, textvariable=self.dy).grid(
+            row=0,
+            column=7,
+            sticky="w",
+            padx=(6, 0),
+        )
+
+        arrows = ttk.Frame(controls)
+        arrows.grid(row=1, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        ttk.Button(arrows, text="Left", command=lambda: self.nudge(-self.step.get(), 0.0)).grid(row=1, column=0, padx=2)
+        ttk.Button(arrows, text="Up", command=lambda: self.nudge(0.0, self.step.get())).grid(row=0, column=1, padx=2)
+        ttk.Button(arrows, text="Down", command=lambda: self.nudge(0.0, -self.step.get())).grid(row=1, column=1, padx=2)
+        ttk.Button(arrows, text="Right", command=lambda: self.nudge(self.step.get(), 0.0)).grid(row=1, column=2, padx=2)
+
+        actions = ttk.Frame(controls)
+        actions.grid(row=1, column=4, columnspan=4, sticky="e", pady=(10, 0))
+        ttk.Button(actions, text="Update preview", command=self.update_current_channel).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Reset channel", command=self.reset_channel).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Reset all", command=self.reset_all).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Save image", command=self.save_image).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Cancel", command=self.cancel).pack(side="left")
+
+        ttk.Label(self, textvariable=self.status, padding=(12, 0, 12, 12)).grid(row=2, column=0, sticky="ew")
+
+    def on_channel_selected(self, _event: object | None = None) -> None:
+        band = self.selected_band.get()
+        dx, dy = self.offsets.get(band, [0.0, 0.0])
+        self.dx.set(dx)
+        self.dy.set(dy)
+
+    def current_offsets(self) -> dict[str, tuple[float, float]]:
+        return {band: (values[0], values[1]) for band, values in self.offsets.items()}
+
+    def store_current_channel(self) -> None:
+        band = self.selected_band.get()
+        if band:
+            self.offsets[band] = [float(self.dx.get()), float(self.dy.get())]
+
+    def update_current_channel(self) -> None:
+        self.store_current_channel()
+        self.render_preview()
+
+    def nudge(self, dx: float, dy: float) -> None:
+        self.dx.set(round(float(self.dx.get()) + dx, 2))
+        self.dy.set(round(float(self.dy.get()) + dy, 2))
+        self.update_current_channel()
+
+    def reset_channel(self) -> None:
+        band = self.selected_band.get()
+        if not band:
+            return
+        self.offsets[band] = [0.0, 0.0]
+        self.dx.set(0.0)
+        self.dy.set(0.0)
+        self.render_preview()
+
+    def reset_all(self) -> None:
+        for band in self.offsets:
+            self.offsets[band] = [0.0, 0.0]
+        self.on_channel_selected()
+        self.render_preview()
+
+    def render_preview(self) -> None:
+        shifted = apply_channel_offsets(self.result.stacked, self.current_offsets())
+        rgb = create_available_channel_rgb(shifted, stretch=5, q_value=8)
+
+        fig, ax = plt.subplots(figsize=(8.5, 5.8), dpi=100, frameon=False)
+        ax.imshow(rgb, origin="lower")
+        ax.axis("off")
+        fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        fig.savefig(self.preview_file, bbox_inches="tight", pad_inches=0, dpi=100)
+        plt.close(fig)
+
+        self.preview_image = tk.PhotoImage(file=self.preview_file)
+        self.preview_label.configure(image=self.preview_image)
+        offsets = ", ".join(
+            f"{band}: x={values[0]:.2f}, y={values[1]:.2f}"
+            for band, values in self.offsets.items()
+        )
+        self.status.set(f"Current manual offsets: {offsets}")
+
+    def save_image(self) -> None:
+        self.store_current_channel()
+        shifted = apply_channel_offsets(self.result.stacked, self.current_offsets())
+        self.result.stacked = shifted
+        self.result.rgb = create_available_channel_rgb(shifted, stretch=5, q_value=8)
+        save_rgb_image(self.result.rgb, self.result.output_file)
+        self.parent.on_manual_alignment_saved(self.result, self.current_offsets())
+        self.cleanup()
+        self.destroy()
+
+    def cancel(self) -> None:
+        self.parent.on_manual_alignment_cancelled()
+        self.cleanup()
+        self.destroy()
+
+    def cleanup(self) -> None:
+        self.preview_tempdir.cleanup()
 
 
 class ReductionApp(tk.Tk):
@@ -75,6 +272,7 @@ class ReductionApp(tk.Tk):
         ttk.Label(header, text="Alignment mode").grid(row=5, column=0, sticky="w", pady=(10, 0))
         alignment_options = {
             "Automatic band alignment": ALIGNMENT_AUTOMATIC,
+            "Manual band adjustment": ALIGNMENT_MANUAL,
             "No band adjustment": ALIGNMENT_NONE,
         }
         self.alignment_mode_labels = alignment_options
@@ -320,19 +518,47 @@ class ReductionApp(tk.Tk):
             else:
                 parts.append(f"{band}: {alignment.method} dx={alignment.dx:.2f}, dy={alignment.dy:.2f}")
         detail = "; ".join(parts) if parts else "no channel shifts needed"
-        return f"Band alignment: automatic, reference {reference}; {detail}."
+        label = "manual" if getattr(result, "alignment_mode", "") == ALIGNMENT_MANUAL else "automatic"
+        return f"Band alignment: {label}, reference {reference}; {detail}."
+
+    def format_manual_offsets(self, offsets: dict[str, tuple[float, float]]) -> str:
+        details = "; ".join(
+            f"{band}: x={dx:.2f}, y={dy:.2f}"
+            for band, (dx, dy) in offsets.items()
+            if dx != 0 or dy != 0
+        )
+        return details or "no manual offsets"
+
+    def open_manual_alignment(self, result: object) -> None:
+        self.status.set("Manual alignment ready. Adjust the preview, then save the image.")
+        ManualAlignmentWindow(self, result)
+
+    def on_manual_alignment_saved(self, result: object, offsets: dict[str, tuple[float, float]]) -> None:
+        alignment_summary = self.format_alignment_summary(result)
+        manual_summary = self.format_manual_offsets(offsets)
+        message = f"Image saved to:\n{result.output_file}\n\n{alignment_summary}\nManual offsets: {manual_summary}."
+        self.status.set(f"Image saved to: {result.output_file}. Manual offsets: {manual_summary}.")
+        messagebox.showinfo("Processing complete", message)
+
+    def on_manual_alignment_cancelled(self) -> None:
+        self.status.set("Manual alignment cancelled. No image was saved.")
 
     def run_reduction(self) -> None:
         try:
             object_name = self.object_name.get().strip() or "object"
             paths = self._project_paths()
+            alignment_mode = self.alignment_mode.get()
 
             self.set_status("Processing bias, flats, alignment and RGB composition...")
             result = run_reduction(
                 paths=paths,
                 object_name=object_name,
-                alignment_mode=self.alignment_mode.get(),
+                alignment_mode=alignment_mode,
             )
+
+            if alignment_mode == ALIGNMENT_MANUAL:
+                self.after(0, self.open_manual_alignment, result)
+                return
 
             save_rgb_image(result.rgb, result.output_file)
 

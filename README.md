@@ -83,7 +83,7 @@ If you want a Windows shortcut with the application icon, run `create_airt_short
 6. Calibrates the object images with bias and flat correction.
 7. Uses one `V` image as the alignment reference when available, otherwise uses another available filter.
 8. Aligns and stacks the images for each filter.
-9. Optionally aligns the final stacked bands before RGB composition.
+9. Optionally aligns the final stacked bands before RGB composition, depending on the selected alignment mode.
 10. Subtracts the sky background.
 11. Generates the final image with the available color channels.
 12. Saves the PNG result in the selected Output folder.
@@ -92,7 +92,7 @@ If you want a Windows shortcut with the application icon, run `create_airt_short
 
 - File names must identify the filter, for example `_B_`, `_V_`, `_R_`, or end with `B.FITS`, `V.FITS`, `R.FITS`.
 - `R`, `V` and `B` are mapped to red, green and blue. If only one or two filters are available, the missing channels are left empty.
-- Alignment mode can be set to automatic band alignment or no band adjustment. No band adjustment keeps the previous composition behavior. Automatic mode aligns the final stacked bands before RGB composition, using `V` as the reference when available, otherwise the first available color band.
+- Alignment mode can be set to no band adjustment, automatic band alignment, or manual band adjustment. No band adjustment keeps the previous composition behavior. Automatic mode aligns the final stacked bands before RGB composition, using `V` as the reference when available, otherwise the first available color band. Manual mode starts from the automatic alignment and opens a preview window where each RGB channel can be shifted before saving.
 - The `I` filter is scanned, but is not yet used in the RGB composition.
 - The automatic scan counts and classifies FITS files by folder and filter. It does not create masters, reduce images, align images or save output files.
-- Individual visual inspection will be added in a future version.
+- Manual band adjustment provides a preview window with per-channel X/Y offsets, arrow controls and reset actions before saving the final PNG.
