@@ -9,31 +9,13 @@ from astropy.visualization import ImageNormalize, ZScaleInterval
 from .calibration import reduce_image
 
 
-def save_rgb_image(rgb: np.ndarray, output_file: Path, title: str, caption: str = "") -> None:
-    fig, ax = plt.subplots(figsize=(12, 10))
+def save_rgb_image(rgb: np.ndarray, output_file: Path) -> None:
+    fig, ax = plt.subplots(figsize=(12, 10), frameon=False)
     ax.imshow(rgb, origin="lower")
-    ax.set_title(title)
     ax.axis("off")
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
-    if caption:
-        ax.text(
-            0.95,
-            0.05,
-            caption,
-            transform=ax.transAxes,
-            fontsize=10,
-            color="white",
-            verticalalignment="bottom",
-            horizontalalignment="right",
-            bbox={
-                "boxstyle": "round,pad=0.5",
-                "facecolor": "black",
-                "alpha": 0.25,
-                "edgecolor": "none",
-            },
-        )
-
-    fig.savefig(output_file, bbox_inches="tight", dpi=300)
+    fig.savefig(output_file, bbox_inches="tight", pad_inches=0, dpi=300)
     plt.close(fig)
 
 

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
+from tkinter import font
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from reduction_tool.io import scan_project
+from reduction_tool.io import find_fits_files, group_by_filter, scan_project
 from reduction_tool.models import FILTERS, ProjectPaths
 from reduction_tool.plotting import save_rgb_image
 from reduction_tool.processing import run_reduction
@@ -26,6 +27,8 @@ class ReductionApp(tk.Tk):
         self.status = tk.StringVar(value="Select the input and output folders to begin.")
 
         self._build_layout()
+        self._bind_field_changes()
+        self.update_generate_button_state()
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -45,7 +48,19 @@ class ReductionApp(tk.Tk):
 
         actions = ttk.Frame(self, padding=(16, 0, 16, 12))
         actions.grid(row=1, column=0, sticky="ew")
-        ttk.Button(actions, text="Generate RGB image", command=self.start_reduction).pack(side="left")
+        default_font = font.nametofont("TkDefaultFont")
+        button_font = default_font.copy()
+        button_font.configure(weight="bold")
+        self.style = ttk.Style(self)
+        self.style.configure("Primary.TButton", font=button_font, padding=(16, 8))
+        self.generate_button = ttk.Button(
+            actions,
+            text="Generate RGB image",
+            command=self.start_reduction,
+            style="Primary.TButton",
+            state="disabled",
+        )
+        self.generate_button.pack(side="left")
 
         body = ttk.Frame(self, padding=(16, 0, 16, 16))
         body.grid(row=2, column=0, sticky="nsew")
@@ -94,13 +109,13 @@ class ReductionApp(tk.Tk):
         folder = filedialog.askdirectory(title="Select the bias folder")
         if folder:
             self.bias_dir.set(folder)
-            self.scan_files_if_ready()
+            self.scan_files_partial()
 
     def choose_flat_folder(self) -> None:
         folder = filedialog.askdirectory(title="Select the flat folder")
         if folder:
             self.flat_dir.set(folder)
-            self.scan_files_if_ready()
+            self.scan_files_partial()
 
     def choose_object_folder(self) -> None:
         folder = filedialog.askdirectory(title="Select the object folder")
@@ -109,13 +124,26 @@ class ReductionApp(tk.Tk):
             self.object_name.set(Path(folder).name)
             if not self.output_dir.get().strip():
                 self.output_dir.set(str(Path(folder).parent / "output"))
-            self.scan_files_if_ready()
+            self.scan_files_partial()
 
     def choose_output_folder(self) -> None:
         folder = filedialog.askdirectory(title="Select the output folder")
         if folder:
             self.output_dir.set(folder)
-            self.scan_files_if_ready()
+            self.scan_files_partial()
+
+    def _bind_field_changes(self) -> None:
+        for variable in (
+            self.bias_dir,
+            self.flat_dir,
+            self.object_dir,
+            self.output_dir,
+            self.object_name,
+        ):
+            variable.trace_add("write", self.on_field_changed)
+
+    def on_field_changed(self, *_args: object) -> None:
+        self.update_generate_button_state()
 
     def _project_paths(self) -> ProjectPaths:
         missing = []
@@ -155,15 +183,58 @@ class ReductionApp(tk.Tk):
             "No images were processed yet."
         )
 
-    def scan_files_if_ready(self) -> None:
-        if all(
-            value.get().strip()
-            for value in (self.bias_dir, self.flat_dir, self.object_dir, self.output_dir)
-        ):
-            self.scan_files()
+    def scan_files_partial(self) -> None:
+        if self.bias_dir.get().strip() or self.flat_dir.get().strip() or self.object_dir.get().strip():
+            bias_files = (
+                find_fits_files(Path(self.bias_dir.get()))
+                if self.bias_dir.get().strip()
+                else []
+            )
+            flat_files = (
+                find_fits_files(Path(self.flat_dir.get()))
+                if self.flat_dir.get().strip()
+                else []
+            )
+            object_files = (
+                find_fits_files(Path(self.object_dir.get()))
+                if self.object_dir.get().strip()
+                else []
+            )
+            flats = group_by_filter(flat_files)
+            objects = group_by_filter(object_files)
+            bias_count = len(bias_files)
+
+            for band in FILTERS:
+                flat_count = len(flats.get(band, []))
+                object_count = len(objects.get(band, []))
+                self.tree.item(band, values=(bias_count, flat_count, object_count))
+
+            self.status.set(
+                "Automatic scan updated. "
+                f"Bias: {bias_count}; "
+                f"Flats: {len(flat_files)}; "
+                f"Object: {len(object_files)}."
+            )
         else:
             self._reset_table()
-            self.status.set("Select all input and output folders to run the automatic scan.")
+            self.status.set("Select folders to run the automatic scan.")
+
+    def all_fields_ready(self) -> bool:
+        return all(
+            value.get().strip()
+            for value in (
+                self.bias_dir,
+                self.flat_dir,
+                self.object_dir,
+                self.output_dir,
+                self.object_name,
+            )
+        )
+
+    def update_generate_button_state(self) -> None:
+        state = "normal" if self.all_fields_ready() else "disabled"
+        if hasattr(self, "generate_button"):
+            self.generate_button.configure(state=state)
 
     def start_reduction(self) -> None:
         thread = threading.Thread(target=self.run_reduction, daemon=True)
@@ -186,7 +257,7 @@ class ReductionApp(tk.Tk):
             self.set_status("Processing bias, flats, alignment and RGB composition...")
             result = run_reduction(paths=paths, object_name=object_name)
 
-            save_rgb_image(result.rgb, result.output_file, f"RGB Image - {object_name}")
+            save_rgb_image(result.rgb, result.output_file)
 
             self.set_status(f"Image saved to: {result.output_file}")
             self.show_info("Processing complete", f"Image saved to:\n{result.output_file}")
