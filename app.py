@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 from reduction_tool.io import scan_project
 from reduction_tool.models import FILTERS, ProjectPaths
 from reduction_tool.plotting import save_rgb_image
-from reduction_tool.processing import run_quick_rgb_batch, run_rgb_reduction
+from reduction_tool.processing import run_quick_rgb, run_rgb_reduction
 
 
 class ReductionApp(tk.Tk):
@@ -123,8 +123,7 @@ class ReductionApp(tk.Tk):
 
             if self.quick_rgb_mode.get():
                 self.set_status("Processing quick RGB from science images only...")
-                quick_results = run_quick_rgb_batch(base_dir=base_dir, object_name=object_name)
-                result = quick_results.combined
+                result = run_quick_rgb(base_dir=base_dir, object_name=object_name)
                 mode_caption = "Quick RGB mode"
             else:
                 self.set_status("Processing bias, flats, alignment and RGB composition...")
@@ -134,16 +133,8 @@ class ReductionApp(tk.Tk):
             caption = f"Processed in Python\nObject: {object_name}\n{mode_caption}"
             save_rgb_image(result.rgb, result.output_file, f"RGB Image - {object_name}", caption)
 
-            output_files = [result.output_file]
-            if self.quick_rgb_mode.get():
-                for individual in quick_results.individual:
-                    individual_title = f"RGB Image - {individual.output_file.stem}"
-                    save_rgb_image(individual.rgb, individual.output_file, individual_title, caption)
-                    output_files.append(individual.output_file)
-
-            output_message = "\n".join(str(output_file) for output_file in output_files)
-            self.set_status(f"Saved {len(output_files)} image(s).")
-            self.show_info("Processing complete", f"Image(s) saved to:\n{output_message}")
+            self.set_status(f"Image saved to: {result.output_file}")
+            self.show_info("Processing complete", f"Image saved to:\n{result.output_file}")
         except Exception as exc:
             self.set_status("Processing failed.")
             self.show_error("Processing error", str(exc))

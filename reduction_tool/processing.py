@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import re
 
 import numpy as np
 from astropy.visualization import make_lupton_rgb
@@ -17,12 +16,6 @@ class ReductionResult:
     rgb: np.ndarray
     stacked: dict[str, np.ndarray]
     output_file: Path
-
-
-@dataclass
-class QuickRGBResults:
-    combined: ReductionResult
-    individual: list[ReductionResult]
 
 
 def align_to_reference(image: np.ndarray, reference: np.ndarray) -> np.ndarray:
@@ -93,51 +86,6 @@ def subtract_sky_background(image: np.ndarray) -> np.ndarray:
     return np.clip(image - np.median(image), 0, None)
 
 
-def create_rgb_from_bands(
-    red_image: np.ndarray,
-    green_image: np.ndarray,
-    blue_image: np.ndarray,
-    stretch: float,
-    q_value: float,
-) -> np.ndarray:
-    red, green, blue = crop_to_common_shape([red_image, green_image, blue_image])
-    return make_lupton_rgb(
-        subtract_sky_background(red),
-        subtract_sky_background(green),
-        subtract_sky_background(blue),
-        stretch=stretch,
-        Q=q_value,
-    )
-
-
-def quick_rgb_group_key(file_path: Path) -> str:
-    stem = file_path.stem
-    key = re.sub(r"(?i)_band_[BVRI]$", "", stem)
-    key = re.sub(r"(?i)_[BVRI]$", "", key)
-    return key
-
-
-def safe_output_stem(name: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", name.strip())
-    return cleaned.strip("._") or "object"
-
-
-def group_complete_quick_rgb_sets(
-    objects_by_filter: dict[str, list[Path]],
-) -> dict[str, dict[str, Path]]:
-    grouped: dict[str, dict[str, Path]] = {}
-    for band in ("R", "V", "B"):
-        for file_path in objects_by_filter[band]:
-            key = quick_rgb_group_key(file_path)
-            grouped.setdefault(key, {})[band] = file_path
-
-    return {
-        key: files_by_band
-        for key, files_by_band in grouped.items()
-        if all(band in files_by_band for band in ("R", "V", "B"))
-    }
-
-
 def run_rgb_reduction(
     base_dir: Path,
     object_name: str = "object",
@@ -164,7 +112,14 @@ def run_rgb_reduction(
         for band in ("R", "V", "B")
     }
 
-    rgb = create_rgb_from_bands(stacked["R"], stacked["V"], stacked["B"], stretch, q_value)
+    red, green, blue = crop_to_common_shape([stacked["R"], stacked["V"], stacked["B"]])
+    rgb = make_lupton_rgb(
+        subtract_sky_background(red),
+        subtract_sky_background(green),
+        subtract_sky_background(blue),
+        stretch=stretch,
+        Q=q_value,
+    )
 
     output_file = paths.output_dir / f"{object_name}_reduced.png"
     return ReductionResult(rgb=rgb, stacked=stacked, output_file=output_file)
@@ -191,29 +146,14 @@ def run_quick_rgb(
         for band in ("R", "V", "B")
     }
 
-    rgb = create_rgb_from_bands(stacked["R"], stacked["V"], stacked["B"], stretch, q_value)
+    red, green, blue = crop_to_common_shape([stacked["R"], stacked["V"], stacked["B"]])
+    rgb = make_lupton_rgb(
+        subtract_sky_background(red),
+        subtract_sky_background(green),
+        subtract_sky_background(blue),
+        stretch=stretch,
+        Q=q_value,
+    )
 
     output_file = paths.output_dir / f"{object_name}_quick_rgb.png"
     return ReductionResult(rgb=rgb, stacked=stacked, output_file=output_file)
-
-
-def run_quick_rgb_batch(
-    base_dir: Path,
-    object_name: str = "object",
-    stretch: float = 5,
-    q_value: float = 8,
-) -> QuickRGBResults:
-    paths = ProjectPaths.from_base(base_dir)
-    combined = run_quick_rgb(base_dir, object_name, stretch, q_value)
-
-    inventory = scan_project(paths)
-    individual_results: list[ReductionResult] = []
-    for key, files_by_band in group_complete_quick_rgb_sets(inventory.objects).items():
-        bands = {band: read_fits_data(files_by_band[band]) for band in ("R", "V", "B")}
-        rgb = create_rgb_from_bands(bands["R"], bands["V"], bands["B"], stretch, q_value)
-        output_file = paths.output_dir / f"{safe_output_stem(key)}_quick_rgb.png"
-        individual_results.append(
-            ReductionResult(rgb=rgb, stacked=bands, output_file=output_file)
-        )
-
-    return QuickRGBResults(combined=combined, individual=individual_results)
