@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -51,6 +52,19 @@ class ManualAlignmentWindow(tk.Toplevel):
         self.preview_is_stale = False
         self.preview_pil_image: Image.Image | None = None
         self.preview_image: ImageTk.PhotoImage | None = None
+        self.zoom_level = 1.0
+        self.min_zoom = 1.0
+        self.max_zoom = 8.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        self.drag_start: tuple[int, int] | None = None
+        self.drag_start_pan: tuple[float, float] = (0.0, 0.0)
+        self.display_scale = 1.0
+        self.display_origin: tuple[float, float] = (0.0, 0.0)
+        self.measure_mode = False
+        self.measure_points: list[tuple[float, float]] = []
+        self.measure_line_id: int | None = None
+        self.measure_marker_ids: list[int] = []
 
         self._build_layout()
         self.protocol("WM_DELETE_WINDOW", self.cancel)
@@ -101,6 +115,10 @@ class ManualAlignmentWindow(tk.Toplevel):
         )
         self.preview_canvas.grid(row=0, column=0, sticky="nsew")
         self.preview_canvas.bind("<Configure>", self.on_preview_resized)
+        self.preview_canvas.bind("<ButtonPress-1>", self.on_canvas_press)
+        self.preview_canvas.bind("<B1-Motion>", self.on_canvas_drag)
+        self.preview_canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
+        self.preview_canvas.bind("<MouseWheel>", self.on_mouse_wheel)
 
         controls = ttk.Frame(self, padding=(12, 0, 12, 12))
         controls.grid(row=1, column=0, sticky="ew")
@@ -151,6 +169,14 @@ class ManualAlignmentWindow(tk.Toplevel):
         ttk.Button(arrows, text="Up", command=lambda: self.nudge(0.0, self.step.get())).grid(row=0, column=1, padx=2)
         ttk.Button(arrows, text="Down", command=lambda: self.nudge(0.0, -self.step.get())).grid(row=1, column=1, padx=2)
         ttk.Button(arrows, text="Right", command=lambda: self.nudge(self.step.get(), 0.0)).grid(row=1, column=2, padx=2)
+
+        view_tools = ttk.Frame(controls)
+        view_tools.grid(row=2, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        ttk.Button(view_tools, text="Zoom out", command=self.zoom_out).pack(side="left", padx=(0, 8))
+        ttk.Button(view_tools, text="Zoom in", command=self.zoom_in).pack(side="left", padx=(0, 8))
+        ttk.Button(view_tools, text="Reset view", command=self.reset_view).pack(side="left", padx=(0, 8))
+        self.measure_button = ttk.Button(view_tools, text="Measure", command=self.toggle_measure_mode)
+        self.measure_button.pack(side="left")
 
         actions = ttk.Frame(controls)
         actions.grid(row=1, column=4, columnspan=4, sticky="e", pady=(10, 0))
@@ -221,6 +247,170 @@ class ManualAlignmentWindow(tk.Toplevel):
             getattr(self, "dx_spinbox", None),
             getattr(self, "dy_spinbox", None),
         }
+
+    def is_measurement_active(self) -> bool:
+        return self.measure_mode
+
+    def zoom_in(self) -> None:
+        self.set_zoom(self.zoom_level * 1.25)
+
+    def zoom_out(self) -> None:
+        self.set_zoom(self.zoom_level / 1.25)
+
+    def reset_view(self) -> None:
+        self.zoom_level = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        self.clear_measurement()
+        self.display_preview_image()
+        self.status.set("View reset. Use Zoom in to inspect alignment details.")
+
+    def set_zoom(self, zoom: float, center: tuple[int, int] | None = None) -> None:
+        if self.preview_pil_image is None:
+            return
+        old_scale = self.display_scale
+        old_origin_x, old_origin_y = self.display_origin
+        canvas_width = max(1, self.preview_canvas.winfo_width())
+        canvas_height = max(1, self.preview_canvas.winfo_height())
+        if center is None:
+            center = (canvas_width // 2, canvas_height // 2)
+        image_x = (center[0] - old_origin_x) / old_scale if old_scale else 0.0
+        image_y = (center[1] - old_origin_y) / old_scale if old_scale else 0.0
+
+        self.zoom_level = min(self.max_zoom, max(self.min_zoom, zoom))
+        image_width, image_height = self.preview_pil_image.size
+        fit_scale = min(canvas_width / image_width, canvas_height / image_height)
+        new_scale = fit_scale * self.zoom_level
+        display_width = image_width * new_scale
+        display_height = image_height * new_scale
+        centered_x = (canvas_width - display_width) / 2
+        centered_y = (canvas_height - display_height) / 2
+        self.pan_x = center[0] - centered_x - (image_x * new_scale)
+        self.pan_y = center[1] - centered_y - (image_y * new_scale)
+        self.clamp_pan(display_width, display_height, canvas_width, canvas_height)
+        self.display_preview_image()
+
+    def on_mouse_wheel(self, event: tk.Event) -> str:
+        if event.delta > 0:
+            self.set_zoom(self.zoom_level * 1.15, (event.x, event.y))
+        elif event.delta < 0:
+            self.set_zoom(self.zoom_level / 1.15, (event.x, event.y))
+        return "break"
+
+    def on_canvas_press(self, event: tk.Event) -> str:
+        if self.measure_mode:
+            self.add_measurement_point(event.x, event.y)
+            return "break"
+        if self.zoom_level > 1.0:
+            self.drag_start = (event.x, event.y)
+            self.drag_start_pan = (self.pan_x, self.pan_y)
+            self.preview_canvas.configure(cursor="fleur")
+        return "break"
+
+    def on_canvas_drag(self, event: tk.Event) -> str:
+        if self.measure_mode or self.drag_start is None or self.preview_pil_image is None:
+            return "break"
+        start_x, start_y = self.drag_start
+        start_pan_x, start_pan_y = self.drag_start_pan
+        self.pan_x = start_pan_x + event.x - start_x
+        self.pan_y = start_pan_y + event.y - start_y
+        canvas_width = max(1, self.preview_canvas.winfo_width())
+        canvas_height = max(1, self.preview_canvas.winfo_height())
+        image_width, image_height = self.preview_pil_image.size
+        self.clamp_pan(image_width * self.display_scale, image_height * self.display_scale, canvas_width, canvas_height)
+        self.display_preview_image()
+        return "break"
+
+    def on_canvas_release(self, _event: tk.Event) -> str:
+        self.drag_start = None
+        self.preview_canvas.configure(cursor="crosshair" if self.measure_mode else "")
+        return "break"
+
+    def clamp_pan(self, display_width: float, display_height: float, canvas_width: int, canvas_height: int) -> None:
+        max_pan_x = max(0.0, (display_width - canvas_width) / 2)
+        max_pan_y = max(0.0, (display_height - canvas_height) / 2)
+        self.pan_x = min(max_pan_x, max(-max_pan_x, self.pan_x))
+        self.pan_y = min(max_pan_y, max(-max_pan_y, self.pan_y))
+
+    def toggle_measure_mode(self) -> None:
+        self.measure_mode = not self.measure_mode
+        self.clear_measurement()
+        if hasattr(self, "measure_button"):
+            self.measure_button.configure(text="Measuring..." if self.measure_mode else "Measure")
+        self.preview_canvas.configure(cursor="crosshair" if self.measure_mode else "")
+        if self.measure_mode:
+            self.status.set("Measure mode enabled. Click two points on the preview.")
+        else:
+            self.status.set("Measure mode disabled.")
+
+    def clear_measurement(self) -> None:
+        for item_id in self.measure_marker_ids:
+            self.preview_canvas.delete(item_id)
+        self.measure_marker_ids = []
+        if self.measure_line_id is not None:
+            self.preview_canvas.delete(self.measure_line_id)
+            self.measure_line_id = None
+        self.measure_points = []
+
+    def add_measurement_point(self, canvas_x: int, canvas_y: int) -> None:
+        image_point = self.canvas_to_image_point(canvas_x, canvas_y)
+        if image_point is None:
+            return
+        if len(self.measure_points) >= 2:
+            self.clear_measurement()
+        self.measure_points.append(image_point)
+        self.draw_measurement_overlay()
+        if len(self.measure_points) == 2:
+            first, second = self.measure_points
+            distance = math.hypot(second[0] - first[0], second[1] - first[1])
+            self.status.set(f"Measured distance: {distance:.2f} px")
+            messagebox.showinfo("Measurement", f"Distance: {distance:.2f} px", parent=self)
+
+    def canvas_to_image_point(self, canvas_x: int, canvas_y: int) -> tuple[float, float] | None:
+        if self.preview_pil_image is None or self.display_scale <= 0:
+            return None
+        origin_x, origin_y = self.display_origin
+        image_x = (canvas_x - origin_x) / self.display_scale
+        image_y = (canvas_y - origin_y) / self.display_scale
+        image_width, image_height = self.preview_pil_image.size
+        if image_x < 0 or image_y < 0 or image_x > image_width or image_y > image_height:
+            return None
+        return image_x, image_y
+
+    def image_to_canvas_point(self, image_x: float, image_y: float) -> tuple[float, float]:
+        origin_x, origin_y = self.display_origin
+        return origin_x + image_x * self.display_scale, origin_y + image_y * self.display_scale
+
+    def draw_measurement_overlay(self) -> None:
+        for item_id in self.measure_marker_ids:
+            self.preview_canvas.delete(item_id)
+        self.measure_marker_ids = []
+        if self.measure_line_id is not None:
+            self.preview_canvas.delete(self.measure_line_id)
+            self.measure_line_id = None
+
+        canvas_points = [self.image_to_canvas_point(x, y) for x, y in self.measure_points]
+        for x, y in canvas_points:
+            marker = self.preview_canvas.create_oval(
+                x - 4,
+                y - 4,
+                x + 4,
+                y + 4,
+                outline=ACCENT,
+                width=2,
+            )
+            self.measure_marker_ids.append(marker)
+        if len(canvas_points) == 2:
+            self.measure_line_id = self.preview_canvas.create_line(
+                canvas_points[0][0],
+                canvas_points[0][1],
+                canvas_points[1][0],
+                canvas_points[1][1],
+                fill=ACCENT,
+                width=2,
+                dash=(6, 4),
+            )
+            self.preview_canvas.tag_raise(self.measure_line_id)
 
     def current_offsets(self) -> dict[str, tuple[float, float]]:
         return {band: (values[0], values[1]) for band, values in self.offsets.items()}
@@ -299,18 +489,25 @@ class ManualAlignmentWindow(tk.Toplevel):
         canvas_width = max(1, self.preview_canvas.winfo_width())
         canvas_height = max(1, self.preview_canvas.winfo_height())
         image_width, image_height = self.preview_pil_image.size
-        scale = min(canvas_width / image_width, canvas_height / image_height)
-        display_width = max(1, int(image_width * scale))
-        display_height = max(1, int(image_height * scale))
+        fit_scale = min(canvas_width / image_width, canvas_height / image_height)
+        self.display_scale = fit_scale * self.zoom_level
+        display_width = max(1, int(image_width * self.display_scale))
+        display_height = max(1, int(image_height * self.display_scale))
+        self.clamp_pan(display_width, display_height, canvas_width, canvas_height)
+        origin_x = ((canvas_width - display_width) / 2) + self.pan_x
+        origin_y = ((canvas_height - display_height) / 2) + self.pan_y
+        self.display_origin = (origin_x, origin_y)
+
         preview = self.preview_pil_image.resize((display_width, display_height), Image.Resampling.LANCZOS)
         self.preview_image = ImageTk.PhotoImage(preview)
         self.preview_canvas.delete("all")
         self.preview_canvas.create_image(
-            canvas_width // 2,
-            canvas_height // 2,
+            origin_x,
+            origin_y,
             image=self.preview_image,
-            anchor="center",
+            anchor="nw",
         )
+        self.draw_measurement_overlay()
 
     def save_image(self) -> None:
         self.store_current_channel()
