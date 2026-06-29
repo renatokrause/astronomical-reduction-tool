@@ -5,7 +5,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, font, messagebox, ttk
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageOps, ImageTk
 
 from reduction_tool.io import find_fits_files, group_by_filter, scan_project
 from reduction_tool.models import FILTERS, ProjectPaths
@@ -235,7 +235,7 @@ class ManualAlignmentWindow(tk.Toplevel):
     def render_preview(self) -> None:
         shifted = apply_channel_offsets(self.result.stacked, self.current_offsets())
         rgb = create_available_channel_rgb(shifted, stretch=5, q_value=8)
-        self.preview_pil_image = Image.fromarray(rgb).convert("RGB")
+        self.preview_pil_image = ImageOps.flip(Image.fromarray(rgb).convert("RGB"))
         self.display_preview_image()
         offsets = ", ".join(
             f"{band}: x={values[0]:.2f}, y={values[1]:.2f}"
