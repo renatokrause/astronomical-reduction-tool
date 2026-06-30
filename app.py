@@ -583,30 +583,54 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.configure_app_icon()
         self.configure(bg=DARK_BG)
 
+        self.source_stacked = {
+            band: np.array(image, copy=True)
+            for band, image in result.stacked.items()
+        }
+        self.available_bands = [band for band in FILTERS if band in self.source_stacked]
+        self.available_bands.extend(band for band in self.source_stacked if band not in self.available_bands)
+        if not self.available_bands:
+            self.available_bands = list(self.source_stacked)
+
         self.mode_labels = {
+            "Off": BACKGROUND_OFF,
             "Automatic background correction": BACKGROUND_AUTOMATIC,
             "Valid field mask": BACKGROUND_VALID_FIELD_MASK,
         }
-        initial_mode = getattr(result, "background_correction", None) or BACKGROUND_AUTOMATIC
-        if initial_mode == BACKGROUND_OFF:
-            initial_mode = BACKGROUND_AUTOMATIC
-        initial_label = next((label for label, mode in self.mode_labels.items() if mode == initial_mode), "Automatic background correction")
-        self.mode_label = tk.StringVar(value=initial_label)
-        self.radius = tk.DoubleVar(value=float(getattr(result, "background_mask_radius", 0.47)))
-        self.softness = tk.DoubleVar(value=float(getattr(result, "background_mask_softness", 0.045)))
-        self.outside_intensity = tk.DoubleVar(value=float(getattr(result, "background_outside_intensity", 0.0)))
-        self.status = tk.StringVar(value="Adjust background correction, update the preview, then save the image.")
+        self.band_settings = self.initial_band_settings(result)
+        self.selected_band = tk.StringVar(value=self.available_bands[0] if self.available_bands else "")
+        self.current_background_band = self.selected_band.get()
+        self.mode_label = tk.StringVar()
+        self.radius = tk.DoubleVar()
+        self.softness = tk.DoubleVar()
+        self.outside_intensity = tk.DoubleVar()
+        self.status = tk.StringVar(value="Select a band, choose a background correction, update the preview, then save the image.")
         self.preview_pil_image: Image.Image | None = None
         self.preview_image: ImageTk.PhotoImage | None = None
 
         self._build_layout()
         self.protocol("WM_DELETE_WINDOW", self.cancel)
-        self.update_controls_state()
+        self.load_selected_band_settings()
         self.render_preview()
         self.after(50, self.maximize_window)
         self.after(100, self.update_button.focus_set)
         self.bind_all("<space>", lambda _event: self.handle_update_preview())
         self.grab_set()
+
+    def initial_band_settings(self, result: object) -> dict[str, dict[str, float | str]]:
+        existing = getattr(result, "background_band_corrections", None) or {}
+        settings: dict[str, dict[str, float | str]] = {}
+        for band in self.available_bands:
+            band_existing = existing.get(band, {}) if isinstance(existing, dict) else {}
+            settings[band] = {
+                "mode": str(band_existing.get("mode", BACKGROUND_OFF)),
+                "radius": float(band_existing.get("radius", getattr(result, "background_mask_radius", 0.47))),
+                "softness": float(band_existing.get("softness", getattr(result, "background_mask_softness", 0.045))),
+                "outside_correction": float(
+                    band_existing.get("outside_correction", getattr(result, "background_outside_intensity", 0.0))
+                ),
+            }
+        return settings
 
     def configure_app_icon(self) -> None:
         try:
@@ -636,9 +660,20 @@ class BackgroundCorrectionWindow(tk.Toplevel):
 
         controls = ttk.Frame(self, padding=(12, 0, 12, 12))
         controls.grid(row=1, column=0, sticky="ew")
-        controls.columnconfigure(10, weight=1)
+        controls.columnconfigure(12, weight=1)
 
-        ttk.Label(controls, text="Background correction").grid(row=0, column=0, sticky="w")
+        ttk.Label(controls, text="Band").grid(row=0, column=0, sticky="w")
+        self.band_picker = ttk.Combobox(
+            controls,
+            state="readonly",
+            values=tuple(self.available_bands),
+            textvariable=self.selected_band,
+            width=8,
+        )
+        self.band_picker.grid(row=0, column=1, sticky="w", padx=(8, 18))
+        self.band_picker.bind("<<ComboboxSelected>>", self.on_band_selected)
+
+        ttk.Label(controls, text="Background correction").grid(row=0, column=2, sticky="w")
         self.mode_picker = ttk.Combobox(
             controls,
             state="readonly",
@@ -646,25 +681,25 @@ class BackgroundCorrectionWindow(tk.Toplevel):
             textvariable=self.mode_label,
             width=32,
         )
-        self.mode_picker.grid(row=0, column=1, sticky="w", padx=(8, 18))
+        self.mode_picker.grid(row=0, column=3, sticky="w", padx=(8, 18))
         self.mode_picker.bind("<<ComboboxSelected>>", self.on_mode_selected)
 
-        ttk.Label(controls, text="Radius").grid(row=0, column=2, sticky="w")
+        ttk.Label(controls, text="Radius").grid(row=0, column=4, sticky="w")
         self.radius_spinbox = self.create_number_spinbox(controls, self.radius, 0.10, 0.95, 0.01, 7)
-        self.radius_spinbox.grid(row=0, column=3, sticky="w", padx=(8, 18))
+        self.radius_spinbox.grid(row=0, column=5, sticky="w", padx=(8, 18))
 
-        ttk.Label(controls, text="Softness").grid(row=0, column=4, sticky="w")
+        ttk.Label(controls, text="Softness").grid(row=0, column=6, sticky="w")
         self.softness_spinbox = self.create_number_spinbox(controls, self.softness, 0.001, 0.50, 0.005, 7)
-        self.softness_spinbox.grid(row=0, column=5, sticky="w", padx=(8, 18))
+        self.softness_spinbox.grid(row=0, column=7, sticky="w", padx=(8, 18))
 
-        ttk.Label(controls, text="Outside correction").grid(row=0, column=6, sticky="w")
+        ttk.Label(controls, text="Outside correction").grid(row=0, column=8, sticky="w")
         self.outside_intensity_spinbox = self.create_number_spinbox(controls, self.outside_intensity, 0.0, 1.0, 0.05, 7)
-        self.outside_intensity_spinbox.grid(row=0, column=7, sticky="w", padx=(8, 18))
+        self.outside_intensity_spinbox.grid(row=0, column=9, sticky="w", padx=(8, 18))
 
         self.update_button = ttk.Button(controls, text="Update preview", command=self.render_preview)
-        self.update_button.grid(row=0, column=8, sticky="w", padx=(0, 8))
-        ttk.Button(controls, text="Save image", command=self.save_image).grid(row=0, column=9, sticky="w", padx=(0, 8))
-        ttk.Button(controls, text="Cancel", command=self.cancel).grid(row=0, column=10, sticky="e")
+        self.update_button.grid(row=0, column=10, sticky="w", padx=(0, 8))
+        ttk.Button(controls, text="Save image", command=self.save_image).grid(row=0, column=11, sticky="w", padx=(0, 8))
+        ttk.Button(controls, text="Cancel", command=self.cancel).grid(row=0, column=12, sticky="e")
 
         ttk.Label(self, textvariable=self.status, style="Muted.TLabel", padding=(12, 0, 12, 12)).grid(
             row=2,
@@ -731,9 +766,41 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.outside_intensity.set(value)
         return value
 
+    def selected_band_name(self) -> str:
+        return self.selected_band.get() or (self.available_bands[0] if self.available_bands else "")
+
+    def label_for_mode(self, mode: str) -> str:
+        return next((label for label, value in self.mode_labels.items() if value == mode), "Off")
+
+    def store_selected_band_settings(self) -> None:
+        band = self.current_background_band or self.selected_band_name()
+        if not band:
+            return
+        self.band_settings[band] = {
+            "mode": self.current_mode(),
+            "radius": self.current_radius(),
+            "softness": self.current_softness(),
+            "outside_correction": self.current_outside_intensity(),
+        }
+
+    def load_selected_band_settings(self) -> None:
+        band = self.selected_band_name()
+        settings = self.band_settings.get(band, {})
+        self.mode_label.set(self.label_for_mode(str(settings.get("mode", BACKGROUND_OFF))))
+        self.radius.set(float(settings.get("radius", 0.47)))
+        self.softness.set(float(settings.get("softness", 0.045)))
+        self.outside_intensity.set(float(settings.get("outside_correction", 0.0)))
+        self.current_background_band = band
+        self.update_controls_state()
+
+    def on_band_selected(self, _event: object | None = None) -> None:
+        self.store_selected_band_settings()
+        self.load_selected_band_settings()
+        self.status.set(f"Band {self.selected_band_name()} selected. Adjust settings and update the preview.")
+
     def on_mode_selected(self, _event: object | None = None) -> None:
         self.update_controls_state()
-        self.status.set("Background mode changed. Click Update preview to apply it.")
+        self.status.set(f"Band {self.selected_band_name()} mode changed. Click Update preview to apply it.")
 
     def update_controls_state(self) -> None:
         state = "normal" if self.current_mode() == BACKGROUND_VALID_FIELD_MASK else "disabled"
@@ -742,13 +809,22 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.outside_intensity_spinbox.configure(state=state)
 
     def corrected_stacked(self) -> dict[str, np.ndarray]:
-        return apply_background_correction(
-            self.result.stacked,
-            self.current_mode(),
-            self.current_radius(),
-            self.current_softness(),
-            self.current_outside_intensity(),
-        )
+        self.store_selected_band_settings()
+        corrected = {}
+        for band, image in self.source_stacked.items():
+            settings = self.band_settings.get(band, {})
+            mode = str(settings.get("mode", BACKGROUND_OFF))
+            radius = float(settings.get("radius", 0.47))
+            softness = float(settings.get("softness", 0.045))
+            outside_correction = float(settings.get("outside_correction", 0.0))
+            corrected[band] = apply_background_correction(
+                {band: image},
+                mode,
+                radius,
+                softness,
+                outside_correction,
+            )[band]
+        return corrected
 
     def handle_update_preview(self) -> str:
         self.render_preview()
@@ -761,9 +837,16 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         rgb = create_available_channel_rgb(corrected, stretch=5, q_value=8)
         self.preview_pil_image = ImageOps.flip(Image.fromarray(rgb).convert("RGB"))
         self.display_preview_image()
-        self.status.set(
-            f"Preview updated. Radius={self.current_radius():.3f}; softness={self.current_softness():.3f}; outside correction={self.current_outside_intensity():.2f}."
-        )
+        self.status.set(self.format_status_message())
+
+    def format_status_message(self) -> str:
+        active = [
+            f"{band}: {self.label_for_mode(str(settings['mode']))}"
+            for band, settings in self.band_settings.items()
+            if settings.get("mode") != BACKGROUND_OFF
+        ]
+        summary = "; ".join(active) if active else "no band corrections"
+        return f"Preview updated for {self.selected_band_name()}. Current corrections: {summary}."
 
     def display_preview_image(self) -> None:
         if self.preview_pil_image is None:
@@ -785,10 +868,16 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         corrected = self.corrected_stacked()
         self.result.stacked = corrected
         self.result.rgb = create_available_channel_rgb(corrected, stretch=5, q_value=8)
-        self.result.background_correction = self.current_mode()
-        self.result.background_mask_radius = self.current_radius()
-        self.result.background_mask_softness = self.current_softness()
-        self.result.background_outside_intensity = self.current_outside_intensity()
+        self.result.background_correction = "per_band"
+        self.result.background_band_corrections = self.band_settings.copy()
+        first_active = next(
+            (settings for settings in self.band_settings.values() if settings.get("mode") != BACKGROUND_OFF),
+            None,
+        )
+        if first_active:
+            self.result.background_mask_radius = float(first_active.get("radius", 0.47))
+            self.result.background_mask_softness = float(first_active.get("softness", 0.045))
+            self.result.background_outside_intensity = float(first_active.get("outside_correction", 0.0))
         save_rgb_image(self.result.rgb, self.result.output_file)
         self.parent.on_background_correction_saved(self.result, self.manual_offsets)
         self.cleanup()
@@ -801,7 +890,6 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.parent.on_background_correction_cancelled()
         self.cleanup()
         self.destroy()
-
 class ObjectFilterWindow(tk.Toplevel):
     def __init__(
         self,
@@ -1521,6 +1609,23 @@ class ReductionApp(tk.Tk):
             BACKGROUND_AUTOMATIC: "automatic background correction",
             BACKGROUND_VALID_FIELD_MASK: "valid field mask",
         }
+        if mode == "per_band":
+            corrections = getattr(result, "background_band_corrections", {}) or {}
+            parts = []
+            for band in FILTERS:
+                settings = corrections.get(band)
+                if not settings or settings.get("mode") == BACKGROUND_OFF:
+                    continue
+                if settings.get("mode") == BACKGROUND_VALID_FIELD_MASK:
+                    parts.append(
+                        f"{band}: valid field mask radius={float(settings.get('radius', 0.47)):.3f}, "
+                        f"softness={float(settings.get('softness', 0.045)):.3f}, "
+                        f"outside correction={float(settings.get('outside_correction', 0.0)):.2f}"
+                    )
+                else:
+                    parts.append(f"{band}: automatic background correction")
+            detail = "; ".join(parts) if parts else "no band corrections"
+            return f"Background correction: per-band ({detail})."
         if mode == BACKGROUND_VALID_FIELD_MASK:
             radius = float(getattr(result, "background_mask_radius", 0.47))
             softness = float(getattr(result, "background_mask_softness", 0.045))

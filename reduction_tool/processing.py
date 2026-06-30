@@ -46,6 +46,7 @@ class ReductionResult:
     background_mask_radius: float = 0.47
     background_mask_softness: float = 0.045
     background_outside_intensity: float = 0.0
+    background_band_corrections: dict[str, dict[str, float | str]] = field(default_factory=dict)
 
 
 def align_to_reference(image: np.ndarray, reference: np.ndarray) -> np.ndarray:
