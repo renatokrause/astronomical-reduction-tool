@@ -584,15 +584,17 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.configure(bg=DARK_BG)
 
         self.mode_labels = {
-            "Off": BACKGROUND_OFF,
             "Automatic background correction": BACKGROUND_AUTOMATIC,
             "Valid field mask": BACKGROUND_VALID_FIELD_MASK,
         }
-        initial_mode = getattr(result, "background_correction", None) or parent.background_correction.get()
-        initial_label = next((label for label, mode in self.mode_labels.items() if mode == initial_mode), "Off")
+        initial_mode = getattr(result, "background_correction", None) or BACKGROUND_AUTOMATIC
+        if initial_mode == BACKGROUND_OFF:
+            initial_mode = BACKGROUND_AUTOMATIC
+        initial_label = next((label for label, mode in self.mode_labels.items() if mode == initial_mode), "Automatic background correction")
         self.mode_label = tk.StringVar(value=initial_label)
         self.radius = tk.DoubleVar(value=float(getattr(result, "background_mask_radius", 0.47)))
         self.softness = tk.DoubleVar(value=float(getattr(result, "background_mask_softness", 0.045)))
+        self.outside_intensity = tk.DoubleVar(value=float(getattr(result, "background_outside_intensity", 0.0)))
         self.status = tk.StringVar(value="Adjust background correction, update the preview, then save the image.")
         self.preview_pil_image: Image.Image | None = None
         self.preview_image: ImageTk.PhotoImage | None = None
@@ -633,7 +635,7 @@ class BackgroundCorrectionWindow(tk.Toplevel):
 
         controls = ttk.Frame(self, padding=(12, 0, 12, 12))
         controls.grid(row=1, column=0, sticky="ew")
-        controls.columnconfigure(8, weight=1)
+        controls.columnconfigure(10, weight=1)
 
         ttk.Label(controls, text="Background correction").grid(row=0, column=0, sticky="w")
         self.mode_picker = ttk.Combobox(
@@ -654,10 +656,14 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.softness_spinbox = self.create_number_spinbox(controls, self.softness, 0.001, 0.50, 0.005, 7)
         self.softness_spinbox.grid(row=0, column=5, sticky="w", padx=(8, 18))
 
+        ttk.Label(controls, text="Outside intensity").grid(row=0, column=6, sticky="w")
+        self.outside_intensity_spinbox = self.create_number_spinbox(controls, self.outside_intensity, 0.0, 1.0, 0.05, 7)
+        self.outside_intensity_spinbox.grid(row=0, column=7, sticky="w", padx=(8, 18))
+
         self.update_button = ttk.Button(controls, text="Update preview", command=self.render_preview)
-        self.update_button.grid(row=0, column=6, sticky="w", padx=(0, 8))
-        ttk.Button(controls, text="Save image", command=self.save_image).grid(row=0, column=7, sticky="w", padx=(0, 8))
-        ttk.Button(controls, text="Cancel", command=self.cancel).grid(row=0, column=8, sticky="e")
+        self.update_button.grid(row=0, column=8, sticky="w", padx=(0, 8))
+        ttk.Button(controls, text="Save image", command=self.save_image).grid(row=0, column=9, sticky="w", padx=(0, 8))
+        ttk.Button(controls, text="Cancel", command=self.cancel).grid(row=0, column=10, sticky="e")
 
         ttk.Label(self, textvariable=self.status, style="Muted.TLabel", padding=(12, 0, 12, 12)).grid(
             row=2,
@@ -715,6 +721,15 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.softness.set(value)
         return value
 
+    def current_outside_intensity(self) -> float:
+        try:
+            value = float(self.outside_intensity.get())
+        except (tk.TclError, ValueError):
+            value = 0.0
+        value = min(1.0, max(0.0, value))
+        self.outside_intensity.set(value)
+        return value
+
     def on_mode_selected(self, _event: object | None = None) -> None:
         self.update_controls_state()
         self.status.set("Background mode changed. Click Update preview to apply it.")
@@ -723,6 +738,7 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         state = "normal" if self.current_mode() == BACKGROUND_VALID_FIELD_MASK else "disabled"
         self.radius_spinbox.configure(state=state)
         self.softness_spinbox.configure(state=state)
+        self.outside_intensity_spinbox.configure(state=state)
 
     def corrected_stacked(self) -> dict[str, np.ndarray]:
         return apply_background_correction(
@@ -730,6 +746,7 @@ class BackgroundCorrectionWindow(tk.Toplevel):
             self.current_mode(),
             self.current_radius(),
             self.current_softness(),
+            self.current_outside_intensity(),
         )
 
     def render_preview(self) -> None:
@@ -738,7 +755,7 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.preview_pil_image = ImageOps.flip(Image.fromarray(rgb).convert("RGB"))
         self.display_preview_image()
         self.status.set(
-            f"Preview updated. Radius={self.current_radius():.3f}; softness={self.current_softness():.3f}."
+            f"Preview updated. Radius={self.current_radius():.3f}; softness={self.current_softness():.3f}; outside intensity={self.current_outside_intensity():.2f}."
         )
 
     def display_preview_image(self) -> None:
@@ -764,6 +781,7 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.result.background_correction = self.current_mode()
         self.result.background_mask_radius = self.current_radius()
         self.result.background_mask_softness = self.current_softness()
+        self.result.background_outside_intensity = self.current_outside_intensity()
         save_rgb_image(self.result.rgb, self.result.output_file)
         self.parent.on_background_correction_saved(self.result, self.manual_offsets)
         self.destroy()
@@ -1010,6 +1028,7 @@ class ReductionApp(tk.Tk):
         self.object_name = tk.StringVar(value="object")
         self.alignment_mode = tk.StringVar(value=ALIGNMENT_MANUAL)
         self.background_correction = tk.StringVar(value=BACKGROUND_OFF)
+        self.background_correction_enabled = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="Select the input and output folders to begin.")
         self.progress = tk.DoubleVar(value=0.0)
         self.object_file_selection: dict[str, set[Path]] | None = None
@@ -1048,6 +1067,8 @@ class ReductionApp(tk.Tk):
         self.style.configure("BrandSubtitle.TLabel", background=PANEL_BG, foreground="#55c7ff", font=brand_subtitle_font)
         self.style.configure("BrandAuthor.TLabel", background=PANEL_BG, foreground=MUTED_TEXT, font=brand_author_font)
         self.style.configure("Preview.TLabel", background=PANEL_BG, foreground=TEXT)
+        self.style.configure("Panel.TCheckbutton", background=PANEL_BG, foreground=TEXT, focuscolor=PANEL_BG)
+        self.style.map("Panel.TCheckbutton", background=[("active", PANEL_BG)], foreground=[("disabled", "#64708d")])
         self.style.configure("TLabelFrame", background=DARK_BG, foreground=MUTED_TEXT, bordercolor=BORDER, borderwidth=1, relief="flat")
         self.style.configure("TLabelFrame.Label", background=DARK_BG, foreground=MUTED_TEXT)
         self.style.configure("TEntry", fieldbackground=FIELD_BG, foreground=TEXT, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, insertcolor=TEXT, padding=(6, 5), relief="flat")
@@ -1122,20 +1143,14 @@ class ReductionApp(tk.Tk):
         self.alignment_mode_picker.bind("<<ComboboxSelected>>", self.on_alignment_mode_selected)
 
         ttk.Label(header, text="Background correction", style="Panel.TLabel").grid(row=6, column=0, sticky="w", pady=(10, 0))
-        background_options = {
-            "Off": BACKGROUND_OFF,
-            "Automatic background correction": BACKGROUND_AUTOMATIC,
-            "Valid field mask": BACKGROUND_VALID_FIELD_MASK,
-        }
-        self.background_correction_labels = background_options
-        self.background_correction_picker = ttk.Combobox(
+        self.background_correction_toggle = ttk.Checkbutton(
             header,
-            state="readonly",
-            values=tuple(background_options.keys()),
+            text="Enable background correction",
+            variable=self.background_correction_enabled,
+            command=self.on_background_correction_selected,
+            style="Panel.TCheckbutton",
         )
-        self.background_correction_picker.grid(row=6, column=1, sticky="ew", padx=8, pady=(10, 0))
-        self.background_correction_picker.set("Off")
-        self.background_correction_picker.bind("<<ComboboxSelected>>", self.on_background_correction_selected)
+        self.background_correction_toggle.grid(row=6, column=1, sticky="w", padx=8, pady=(10, 0))
         if hasattr(self, "header_icon_image"):
             brand = ttk.Frame(header, style="Panel.TFrame")
             brand.grid(row=0, column=3, rowspan=7, padx=(34, 18), sticky="e")
@@ -1247,8 +1262,8 @@ class ReductionApp(tk.Tk):
         self.alignment_mode.set(self.alignment_mode_labels.get(selected, ALIGNMENT_MANUAL))
 
     def on_background_correction_selected(self, _event: object | None = None) -> None:
-        selected = self.background_correction_picker.get()
-        self.background_correction.set(self.background_correction_labels.get(selected, BACKGROUND_OFF))
+        mode = BACKGROUND_AUTOMATIC if self.background_correction_enabled.get() else BACKGROUND_OFF
+        self.background_correction.set(mode)
         self.progress.set(0)
 
     def _add_folder_picker(
@@ -1497,7 +1512,8 @@ class ReductionApp(tk.Tk):
         if mode == BACKGROUND_VALID_FIELD_MASK:
             radius = float(getattr(result, "background_mask_radius", 0.47))
             softness = float(getattr(result, "background_mask_softness", 0.045))
-            return f"Background correction: valid field mask (radius={radius:.3f}, softness={softness:.3f})."
+            outside = float(getattr(result, "background_outside_intensity", 0.0))
+            return f"Background correction: valid field mask (radius={radius:.3f}, softness={softness:.3f}, outside intensity={outside:.2f})."
         return f"Background correction: {labels.get(mode, mode)}."
 
     def format_manual_offsets(self, offsets: dict[str, tuple[float, float]]) -> str:
@@ -1514,6 +1530,9 @@ class ReductionApp(tk.Tk):
         ManualAlignmentWindow(self, result)
 
     def on_manual_alignment_confirmed(self, result: object, offsets: dict[str, tuple[float, float]]) -> None:
+        if getattr(result, "background_correction", BACKGROUND_OFF) == BACKGROUND_OFF:
+            self.save_final_image(result, offsets)
+            return
         self.open_background_correction(result, offsets)
 
     def open_background_correction(
@@ -1524,6 +1543,14 @@ class ReductionApp(tk.Tk):
         self.status.set("Background correction preview ready. Adjust the preview, then save the image.")
         self.progress.set(98)
         BackgroundCorrectionWindow(self, result, manual_offsets)
+
+    def save_final_image(
+        self,
+        result: object,
+        manual_offsets: dict[str, tuple[float, float]] | None = None,
+    ) -> None:
+        save_rgb_image(result.rgb, result.output_file)
+        self.on_background_correction_saved(result, manual_offsets)
 
     def on_background_correction_saved(
         self,
@@ -1569,6 +1596,10 @@ class ReductionApp(tk.Tk):
 
             if alignment_mode == ALIGNMENT_MANUAL:
                 self.after(0, self.open_manual_alignment, result)
+                return
+
+            if background_correction == BACKGROUND_OFF:
+                self.after(0, self.save_final_image, result)
                 return
 
             self.after(0, self.open_background_correction, result)
