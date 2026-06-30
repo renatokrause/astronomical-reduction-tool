@@ -146,7 +146,7 @@ class ManualAlignmentWindow(tk.Toplevel):
         self.channel_picker.bind("<<ComboboxSelected>>", self.on_channel_selected)
 
         ttk.Label(controls, text="Step").grid(row=0, column=2, sticky="w")
-        self.step_spinbox = self.create_number_spinbox(controls, self.step, 0.1, 50.0, 0.5, 7)
+        self.step_spinbox = self.create_number_spinbox(controls, self.step, 0.1, 50.0, 0.1, 7)
         for sequence in ("<Return>", "<FocusOut>", "<ButtonRelease-1>"):
             self.step_spinbox.bind(sequence, self.on_step_changed)
         self.step_spinbox.grid(
@@ -605,6 +605,7 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.render_preview()
         self.after(50, self.maximize_window)
         self.after(100, self.update_button.focus_set)
+        self.bind_all("<space>", lambda _event: self.handle_update_preview())
         self.grab_set()
 
     def configure_app_icon(self) -> None:
@@ -656,7 +657,7 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.softness_spinbox = self.create_number_spinbox(controls, self.softness, 0.001, 0.50, 0.005, 7)
         self.softness_spinbox.grid(row=0, column=5, sticky="w", padx=(8, 18))
 
-        ttk.Label(controls, text="Outside intensity").grid(row=0, column=6, sticky="w")
+        ttk.Label(controls, text="Outside correction").grid(row=0, column=6, sticky="w")
         self.outside_intensity_spinbox = self.create_number_spinbox(controls, self.outside_intensity, 0.0, 1.0, 0.05, 7)
         self.outside_intensity_spinbox.grid(row=0, column=7, sticky="w", padx=(8, 18))
 
@@ -749,13 +750,19 @@ class BackgroundCorrectionWindow(tk.Toplevel):
             self.current_outside_intensity(),
         )
 
+    def handle_update_preview(self) -> str:
+        self.render_preview()
+        if hasattr(self, "update_button"):
+            self.update_button.focus_set()
+        return "break"
+
     def render_preview(self) -> None:
         corrected = self.corrected_stacked()
         rgb = create_available_channel_rgb(corrected, stretch=5, q_value=8)
         self.preview_pil_image = ImageOps.flip(Image.fromarray(rgb).convert("RGB"))
         self.display_preview_image()
         self.status.set(
-            f"Preview updated. Radius={self.current_radius():.3f}; softness={self.current_softness():.3f}; outside intensity={self.current_outside_intensity():.2f}."
+            f"Preview updated. Radius={self.current_radius():.3f}; softness={self.current_softness():.3f}; outside correction={self.current_outside_intensity():.2f}."
         )
 
     def display_preview_image(self) -> None:
@@ -784,10 +791,15 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.result.background_outside_intensity = self.current_outside_intensity()
         save_rgb_image(self.result.rgb, self.result.output_file)
         self.parent.on_background_correction_saved(self.result, self.manual_offsets)
+        self.cleanup()
         self.destroy()
+
+    def cleanup(self) -> None:
+        self.unbind_all("<space>")
 
     def cancel(self) -> None:
         self.parent.on_background_correction_cancelled()
+        self.cleanup()
         self.destroy()
 
 class ObjectFilterWindow(tk.Toplevel):
@@ -1513,7 +1525,7 @@ class ReductionApp(tk.Tk):
             radius = float(getattr(result, "background_mask_radius", 0.47))
             softness = float(getattr(result, "background_mask_softness", 0.045))
             outside = float(getattr(result, "background_outside_intensity", 0.0))
-            return f"Background correction: valid field mask (radius={radius:.3f}, softness={softness:.3f}, outside intensity={outside:.2f})."
+            return f"Background correction: valid field mask (radius={radius:.3f}, softness={softness:.3f}, outside correction={outside:.2f})."
         return f"Background correction: {labels.get(mode, mode)}."
 
     def format_manual_offsets(self, offsets: dict[str, tuple[float, float]]) -> str:

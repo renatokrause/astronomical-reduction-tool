@@ -219,7 +219,7 @@ def valid_field_mask(
     distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
     mask = np.clip((radius + feather - distance) / feather, 0.0, 1.0)
     smooth_mask = mask * mask * (3.0 - 2.0 * mask)
-    return outside_intensity + (1.0 - outside_intensity) * smooth_mask
+    return (1.0 - outside_intensity) + outside_intensity * smooth_mask
 
 
 def apply_valid_field_mask(
