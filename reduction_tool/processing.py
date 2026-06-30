@@ -16,6 +16,14 @@ ALIGNMENT_NONE = "none"
 ALIGNMENT_AUTOMATIC = "automatic"
 ALIGNMENT_MANUAL = "manual"
 ALIGNMENT_MODES = (ALIGNMENT_NONE, ALIGNMENT_AUTOMATIC, ALIGNMENT_MANUAL)
+BACKGROUND_OFF = "off"
+BACKGROUND_AUTOMATIC = "automatic"
+BACKGROUND_VALID_FIELD_MASK = "valid_field_mask"
+BACKGROUND_CORRECTION_MODES = (
+    BACKGROUND_OFF,
+    BACKGROUND_AUTOMATIC,
+    BACKGROUND_VALID_FIELD_MASK,
+)
 ProgressCallback = Callable[[float, str], None]
 
 
@@ -34,6 +42,7 @@ class ReductionResult:
     alignment_mode: str = ALIGNMENT_AUTOMATIC
     alignment_reference: str | None = None
     channel_alignment: dict[str, ChannelAlignment] = field(default_factory=dict)
+    background_correction: str = BACKGROUND_OFF
 
 
 def align_to_reference(image: np.ndarray, reference: np.ndarray) -> np.ndarray:
@@ -155,6 +164,73 @@ def subtract_sky_background(image: np.ndarray) -> np.ndarray:
     return np.clip(image - np.median(image), 0, None)
 
 
+def estimate_smooth_background(image: np.ndarray) -> np.ndarray:
+    from scipy.ndimage import gaussian_filter, zoom
+
+    data = np.asarray(image, dtype=float)
+    data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+    height, width = data.shape
+    target_size = 96
+    block_y = max(1, height // target_size)
+    block_x = max(1, width // target_size)
+    trimmed_height = max(block_y, (height // block_y) * block_y)
+    trimmed_width = max(block_x, (width // block_x) * block_x)
+    trimmed = data[:trimmed_height, :trimmed_width]
+    low_resolution = np.median(
+        trimmed.reshape(trimmed_height // block_y, block_y, trimmed_width // block_x, block_x),
+        axis=(1, 3),
+    )
+    sigma = max(1.5, min(low_resolution.shape) * 0.08)
+    low_resolution = gaussian_filter(low_resolution, sigma=sigma, mode="nearest")
+    background = zoom(
+        low_resolution,
+        (height / low_resolution.shape[0], width / low_resolution.shape[1]),
+        order=1,
+    )
+    return background[:height, :width]
+
+
+def apply_automatic_background_correction(stacked: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    corrected: dict[str, np.ndarray] = {}
+    for band, image in stacked.items():
+        background = estimate_smooth_background(image)
+        corrected[band] = np.clip(image - background, 0, None)
+    return corrected
+
+
+def valid_field_mask(shape: tuple[int, ...]) -> np.ndarray:
+    height, width = int(shape[0]), int(shape[1])
+    y, x = np.ogrid[:height, :width]
+    center_y = (height - 1) / 2.0
+    center_x = (width - 1) / 2.0
+    radius = min(height, width) * 0.47
+    feather = max(8.0, min(height, width) * 0.045)
+    distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    mask = np.clip((radius + feather - distance) / feather, 0.0, 1.0)
+    return mask * mask * (3.0 - 2.0 * mask)
+
+
+def apply_valid_field_mask(stacked: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    if not stacked:
+        return stacked
+    first_image = next(iter(stacked.values()))
+    mask = valid_field_mask(first_image.shape)
+    return {band: np.asarray(image) * mask for band, image in stacked.items()}
+
+
+def apply_background_correction(
+    stacked: dict[str, np.ndarray],
+    background_correction: str,
+) -> dict[str, np.ndarray]:
+    if background_correction == BACKGROUND_OFF:
+        return stacked
+    if background_correction == BACKGROUND_AUTOMATIC:
+        return apply_automatic_background_correction(stacked)
+    if background_correction == BACKGROUND_VALID_FIELD_MASK:
+        return apply_valid_field_mask(stacked)
+    raise ValueError(f"Unsupported background correction mode: {background_correction}.")
+
+
 def create_available_channel_rgb(
     stacked: dict[str, np.ndarray],
     stretch: float,
@@ -185,11 +261,14 @@ def run_reduction(
     alignment_mode: str = ALIGNMENT_AUTOMATIC,
     progress_callback: ProgressCallback | None = None,
     object_file_selection: dict[str, list[Path]] | None = None,
+    background_correction: str = BACKGROUND_OFF,
 ) -> ReductionResult:
     paths.output_dir.mkdir(parents=True, exist_ok=True)
 
     if alignment_mode not in ALIGNMENT_MODES:
         raise ValueError(f"Unsupported alignment mode: {alignment_mode}.")
+    if background_correction not in BACKGROUND_CORRECTION_MODES:
+        raise ValueError(f"Unsupported background correction mode: {background_correction}.")
 
     def report(progress: float, message: str) -> None:
         if progress_callback:
@@ -257,6 +336,10 @@ def run_reduction(
             for band in stacked
         }
 
+    if background_correction != BACKGROUND_OFF:
+        report(88, "Applying background correction")
+        stacked = apply_background_correction(stacked, background_correction)
+
     report(90, "Composing RGB image")
     rgb = create_available_channel_rgb(stacked, stretch, q_value)
     report(96, "Preparing output image")
@@ -269,4 +352,5 @@ def run_reduction(
         alignment_mode=alignment_mode,
         alignment_reference=reference_band,
         channel_alignment=channel_alignment,
+        background_correction=background_correction,
     )

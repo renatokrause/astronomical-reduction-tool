@@ -19,6 +19,9 @@ from reduction_tool.processing import (
     ALIGNMENT_AUTOMATIC,
     ALIGNMENT_MANUAL,
     ALIGNMENT_NONE,
+    BACKGROUND_AUTOMATIC,
+    BACKGROUND_OFF,
+    BACKGROUND_VALID_FIELD_MASK,
     apply_channel_offsets,
     create_available_channel_rgb,
     run_reduction,
@@ -799,6 +802,7 @@ class ReductionApp(tk.Tk):
         self.output_dir = tk.StringVar()
         self.object_name = tk.StringVar(value="object")
         self.alignment_mode = tk.StringVar(value=ALIGNMENT_MANUAL)
+        self.background_correction = tk.StringVar(value=BACKGROUND_OFF)
         self.status = tk.StringVar(value="Select the input and output folders to begin.")
         self.progress = tk.DoubleVar(value=0.0)
         self.object_file_selection: dict[str, set[Path]] | None = None
@@ -910,9 +914,24 @@ class ReductionApp(tk.Tk):
         self.alignment_mode_picker.set("Manual band adjustment")
         self.alignment_mode_picker.bind("<<ComboboxSelected>>", self.on_alignment_mode_selected)
 
+        ttk.Label(header, text="Background correction", style="Panel.TLabel").grid(row=6, column=0, sticky="w", pady=(10, 0))
+        background_options = {
+            "Off": BACKGROUND_OFF,
+            "Automatic background correction": BACKGROUND_AUTOMATIC,
+            "Valid field mask": BACKGROUND_VALID_FIELD_MASK,
+        }
+        self.background_correction_labels = background_options
+        self.background_correction_picker = ttk.Combobox(
+            header,
+            state="readonly",
+            values=tuple(background_options.keys()),
+        )
+        self.background_correction_picker.grid(row=6, column=1, sticky="ew", padx=8, pady=(10, 0))
+        self.background_correction_picker.set("Off")
+        self.background_correction_picker.bind("<<ComboboxSelected>>", self.on_background_correction_selected)
         if hasattr(self, "header_icon_image"):
             brand = ttk.Frame(header, style="Panel.TFrame")
-            brand.grid(row=0, column=3, rowspan=6, padx=(34, 18), sticky="e")
+            brand.grid(row=0, column=3, rowspan=7, padx=(34, 18), sticky="e")
             brand.columnconfigure(1, weight=1)
             ttk.Label(brand, image=self.header_icon_image, style="Logo.TLabel").grid(
                 row=0,
@@ -1019,6 +1038,11 @@ class ReductionApp(tk.Tk):
     def on_alignment_mode_selected(self, _event: object | None = None) -> None:
         selected = self.alignment_mode_picker.get()
         self.alignment_mode.set(self.alignment_mode_labels.get(selected, ALIGNMENT_MANUAL))
+
+    def on_background_correction_selected(self, _event: object | None = None) -> None:
+        selected = self.background_correction_picker.get()
+        self.background_correction.set(self.background_correction_labels.get(selected, BACKGROUND_OFF))
+        self.progress.set(0)
 
     def _add_folder_picker(
         self,
@@ -1256,6 +1280,15 @@ class ReductionApp(tk.Tk):
         label = "manual" if getattr(result, "alignment_mode", "") == ALIGNMENT_MANUAL else "automatic"
         return f"Band alignment: {label}, reference {reference}; {detail}."
 
+    def format_background_summary(self, result: object) -> str:
+        mode = getattr(result, "background_correction", BACKGROUND_OFF)
+        labels = {
+            BACKGROUND_OFF: "off",
+            BACKGROUND_AUTOMATIC: "automatic background correction",
+            BACKGROUND_VALID_FIELD_MASK: "valid field mask",
+        }
+        return f"Background correction: {labels.get(mode, mode)}."
+
     def format_manual_offsets(self, offsets: dict[str, tuple[float, float]]) -> str:
         details = "; ".join(
             f"{band}: x={dx:.2f}, y={dy:.2f}"
@@ -1272,7 +1305,8 @@ class ReductionApp(tk.Tk):
     def on_manual_alignment_saved(self, result: object, offsets: dict[str, tuple[float, float]]) -> None:
         alignment_summary = self.format_alignment_summary(result)
         manual_summary = self.format_manual_offsets(offsets)
-        message = f"Image saved to:\n{result.output_file}\n\n{alignment_summary}\nManual offsets: {manual_summary}."
+        background_summary = self.format_background_summary(result)
+        message = f"Image saved to:\n{result.output_file}\n\n{alignment_summary}\n{background_summary}\nManual offsets: {manual_summary}."
         self.progress.set(100)
         self.status.set(f"Image saved to: {result.output_file}. Manual offsets: {manual_summary}.")
         messagebox.showinfo("Processing complete", message)
@@ -1286,6 +1320,7 @@ class ReductionApp(tk.Tk):
             object_name = self.object_name.get().strip() or "object"
             paths = self._project_paths()
             alignment_mode = self.alignment_mode.get()
+            background_correction = self.background_correction.get()
 
             self.set_progress(0)
             self.set_status("Processing bias, flats, alignment and RGB composition...")
@@ -1293,6 +1328,7 @@ class ReductionApp(tk.Tk):
                 paths=paths,
                 object_name=object_name,
                 alignment_mode=alignment_mode,
+                background_correction=background_correction,
                 progress_callback=self.update_progress,
                 object_file_selection=self.selected_object_file_lists(),
             )
@@ -1306,8 +1342,9 @@ class ReductionApp(tk.Tk):
             self.set_progress(100)
 
             alignment_summary = self.format_alignment_summary(result)
-            self.set_status(f"Image saved to: {result.output_file}. {alignment_summary}")
-            self.show_info("Processing complete", f"Image saved to:\n{result.output_file}\n\n{alignment_summary}")
+            background_summary = self.format_background_summary(result)
+            self.set_status(f"Image saved to: {result.output_file}. {alignment_summary} {background_summary}")
+            self.show_info("Processing complete", f"Image saved to:\n{result.output_file}\n\n{alignment_summary}\n{background_summary}")
         except Exception as exc:
             self.set_progress(0)
             self.set_status("Processing failed.")
