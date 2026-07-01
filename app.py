@@ -23,11 +23,16 @@ from reduction_tool.processing import (
     BACKGROUND_MEDIAN_GRID,
     BACKGROUND_OFF,
     BACKGROUND_POLYNOMIAL,
+    CROP_AUTOMATIC,
+    CROP_MANUAL,
+    CROP_NONE,
+    apply_final_export_adjustments,
     auto_object_mask_geometry,
     build_elliptical_object_mask,
     compose_linear_rgb,
     create_available_channel_rgb,
     final_stretch_rgb,
+    crop_array,
     neutralize_rgb_background,
     normalise_preview,
     remove_band_background,
@@ -619,6 +624,18 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self.enable_neutralization = tk.BooleanVar(value=True)
         self.neutralization_strength = tk.DoubleVar(value=1.0)
         self.use_sky_mask_only = tk.BooleanVar(value=True)
+        fallback_shape = next(iter(self.source_stacked.values())).shape
+        self.crop_mode_label = tk.StringVar(value="Automatic crop")
+        self.valid_field_crop_margin = tk.IntVar(value=20)
+        self.valid_field_max_crop_percent = tk.DoubleVar(value=20.0)
+        self.manual_crop_x0 = tk.IntVar(value=0)
+        self.manual_crop_y0 = tk.IntVar(value=0)
+        self.manual_crop_x1 = tk.IntVar(value=fallback_shape[1])
+        self.manual_crop_y1 = tk.IntVar(value=fallback_shape[0])
+        self.enable_final_color_balance = tk.BooleanVar(value=True)
+        self.final_color_balance_strength = tk.DoubleVar(value=0.5)
+        self.enable_luminance_enhance = tk.BooleanVar(value=True)
+        self.luminance_enhance_amount = tk.DoubleVar(value=0.15)
         self.status = tk.StringVar(value="Update the preview to remove band gradients and neutralize the RGB background.")
         self.stats_text = tk.StringVar(value="No preview calculated yet.")
 
@@ -637,9 +654,14 @@ class BackgroundCorrectionWindow(tk.Toplevel):
             "Corrected bands",
             "RGB before neutralization",
             "RGB after neutralization",
-            "Final stretched",
-            "Before/After same stretch",
-        )
+            "Final uncropped",
+            "Final color balanced",
+            "Final enhanced",
+            "Valid field mask",
+            "Crop overlay",
+            "Final cropped",
+            "Before/After crop",
+            "Before/After same stretch",        )
 
         self._build_layout()
         self.protocol("WM_DELETE_WINDOW", self.cancel)
@@ -695,7 +717,8 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         self._build_background_controls(controls, 0)
         self._build_object_controls(controls, 1)
         self._build_neutralization_controls(controls, 2)
-        self._build_stats_controls(controls, 3)
+        self._build_final_export_controls(controls, 3)
+        self._build_stats_controls(controls, 4)
 
         actions = ttk.Frame(self, padding=(12, 0, 12, 12))
         actions.grid(row=3, column=0, sticky="ew")
@@ -765,12 +788,48 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         ttk.Label(frame, text="Strength").grid(row=0, column=2, sticky="w")
         self._spin(frame, self.neutralization_strength, 0.0, 1.0, 0.05).grid(row=0, column=3, sticky="w", padx=(6, 12))
 
+    def _build_final_export_controls(self, parent: ttk.Frame, row: int) -> None:
+        frame = self._section(parent, "Final export", row)
+        crop_options = {
+            "No crop": CROP_NONE,
+            "Automatic crop": CROP_AUTOMATIC,
+            "Manual crop": CROP_MANUAL,
+        }
+        self.crop_mode_values = crop_options
+        ttk.Label(frame, text="Crop").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(frame, state="readonly", values=tuple(crop_options.keys()), textvariable=self.crop_mode_label, width=16).grid(row=0, column=1, sticky="w", padx=(6, 14))
+        ttk.Label(frame, text="Margin").grid(row=0, column=2, sticky="w")
+        self._spin(frame, self.valid_field_crop_margin, 0, 200, 1).grid(row=0, column=3, sticky="w", padx=(6, 14))
+        ttk.Label(frame, text="Max crop %").grid(row=0, column=4, sticky="w")
+        self._spin(frame, self.valid_field_max_crop_percent, 0, 45, 1).grid(row=0, column=5, sticky="w", padx=(6, 14))
+        ttk.Checkbutton(frame, text="Final color balance", variable=self.enable_final_color_balance).grid(row=0, column=6, sticky="w")
+        ttk.Label(frame, text="Strength").grid(row=0, column=7, sticky="w")
+        self._spin(frame, self.final_color_balance_strength, 0.0, 1.0, 0.05).grid(row=0, column=8, sticky="w", padx=(6, 14))
+        ttk.Checkbutton(frame, text="Luminance contrast", variable=self.enable_luminance_enhance).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(frame, text="Amount").grid(row=1, column=1, sticky="w", pady=(6, 0))
+        self._spin(frame, self.luminance_enhance_amount, 0.0, 0.5, 0.01).grid(row=1, column=2, sticky="w", padx=(6, 14), pady=(6, 0))
+        for index, (label, var) in enumerate((("X0", self.manual_crop_x0), ("Y0", self.manual_crop_y0), ("X1", self.manual_crop_x1), ("Y1", self.manual_crop_y1))):
+            ttk.Label(frame, text=label).grid(row=1, column=3 + index * 2, sticky="w", pady=(6, 0))
+            self._spin(frame, var, 0, 10000, 1, 8).grid(row=1, column=4 + index * 2, sticky="w", padx=(6, 10), pady=(6, 0))
+
     def _build_stats_controls(self, parent: ttk.Frame, row: int) -> None:
         frame = self._section(parent, "Stats", row)
         ttk.Label(frame, textvariable=self.stats_text, style="Muted.TLabel", justify="left").pack(anchor="w")
 
     def current_method(self) -> str:
         return self.method_values.get(self.method_label.get(), BACKGROUND_HYBRID)
+
+    def current_crop_mode(self) -> str:
+        values = getattr(self, "crop_mode_values", {"Automatic crop": CROP_AUTOMATIC})
+        return values.get(self.crop_mode_label.get(), CROP_AUTOMATIC)
+
+    def manual_crop_box(self) -> tuple[int, int, int, int]:
+        return (
+            int(self.manual_crop_x0.get()),
+            int(self.manual_crop_y0.get()),
+            int(self.manual_crop_x1.get()),
+            int(self.manual_crop_y1.get()),
+        )
 
     def object_mask(self) -> np.ndarray | None:
         if not self.protect_object.get():
@@ -831,8 +890,20 @@ class BackgroundCorrectionWindow(tk.Toplevel):
         else:
             rgb_after = rgb_before
             neutral_stats = {"background_median_before": [0, 0, 0], "background_median_after": [0, 0, 0], "strength": 0.0}
-        final_stretched, stretch_stats = final_stretch_rgb(rgb_after, sky_mask=sky_mask, stretch_strength=8)
+        final_uncropped, stretch_stats = final_stretch_rgb(rgb_after, sky_mask=sky_mask, stretch_strength=8)
         original_stretched, _ = final_stretch_rgb(rgb_original, sky_mask=sky_mask, stretch_strength=8)
+        final_adjustments = apply_final_export_adjustments(
+            final_uncropped,
+            sky_mask=sky_mask,
+            crop_mode=self.current_crop_mode(),
+            manual_crop_box=self.manual_crop_box(),
+            crop_margin_px=int(self.valid_field_crop_margin.get()),
+            crop_max_percent=float(self.valid_field_max_crop_percent.get()),
+            color_balance=bool(self.enable_final_color_balance.get()),
+            color_balance_strength=float(self.final_color_balance_strength.get()),
+            enhance_luminance=bool(self.enable_luminance_enhance.get()),
+            enhance_amount=float(self.luminance_enhance_amount.get()),
+        )
         return {
             "corrected_stacked": corrected,
             "background_models": background_models,
@@ -841,12 +912,26 @@ class BackgroundCorrectionWindow(tk.Toplevel):
             "rgb_original": rgb_original,
             "rgb_before_neutralization": rgb_before,
             "rgb_after_neutralization": rgb_after,
-            "final_stretched": final_stretched,
+            "final_uncropped": final_uncropped,
+            "final_color_balanced": final_adjustments["final_color_balanced"],
+            "final_enhanced": final_adjustments["final_enhanced"],
+            "final_stretched": final_adjustments["final"],
+            "final_cropped": final_adjustments["final_cropped"],
+            "valid_field_mask": final_adjustments["valid_field_mask"],
+            "crop_overlay": final_adjustments["debug_images"]["crop_overlay"],
+            "before_after_crop": final_adjustments["debug_images"]["before_after_crop"],
             "original_stretched": original_stretched,
             "stats": {
                 "bands": band_stats,
                 "rgb_neutralization": neutral_stats,
                 "stretch": stretch_stats,
+                "final_adjustments": final_adjustments["stats"],
+                "crop_box": final_adjustments["stats"].get("crop_box"),
+                "crop_percent_width": final_adjustments["stats"].get("crop_percent_width"),
+                "crop_percent_height": final_adjustments["stats"].get("crop_percent_height"),
+                "final_sky_median_before_color_balance": final_adjustments["stats"].get("final_sky_median_before_color_balance"),
+                "final_sky_median_after_color_balance": final_adjustments["stats"].get("final_sky_median_after_color_balance"),
+                "color_balance_factors": final_adjustments["stats"].get("color_balance_factors"),
                 "gradient_metrics": {band: stats.get("gradient_metrics", {}) for band, stats in band_stats.items()},
                 "object_mask": getattr(self, "current_object_geometry", {}),
             },
@@ -903,6 +988,14 @@ class BackgroundCorrectionWindow(tk.Toplevel):
             f"Final stretch sky median R/G/B: {sky_after[0]:.3f} / {sky_after[1]:.3f} / {sky_after[2]:.3f}; "
             f"clip low/high: {float(stretch.get('clipped_low_percent', 0.0)):.3f}% / {float(stretch.get('clipped_high_percent', 0.0)):.3f}%"
         )
+        final_stats = self.last_result["stats"].get("final_adjustments", {})
+        before_balance = final_stats.get("final_sky_median_before_color_balance", [0, 0, 0])
+        after_balance = final_stats.get("final_sky_median_after_color_balance", [0, 0, 0])
+        lines.append(f"Final color balance R/G/B: {before_balance[0]:.3f}/{before_balance[1]:.3f}/{before_balance[2]:.3f} -> {after_balance[0]:.3f}/{after_balance[1]:.3f}/{after_balance[2]:.3f}")
+        lines.append(
+            f"Crop box: {final_stats.get('crop_box', [0, 0, 0, 0])}; "
+            f"crop W/H: {float(final_stats.get('crop_percent_width', 0.0)):.1f}% / {float(final_stats.get('crop_percent_height', 0.0)):.1f}%"
+        )
         self.stats_text.set("\n".join(lines))
 
     def preview_array(self) -> np.ndarray:
@@ -931,6 +1024,21 @@ class BackgroundCorrectionWindow(tk.Toplevel):
             return normalise_preview(self.last_result["rgb_before_neutralization"])
         if mode == "RGB after neutralization":
             return normalise_preview(self.last_result["rgb_after_neutralization"])
+        if mode == "Final uncropped":
+            return np.asarray(self.last_result["final_uncropped"], dtype=np.float32) / 255.0
+        if mode == "Final color balanced":
+            return np.asarray(self.last_result["final_color_balanced"], dtype=np.float32) / 255.0
+        if mode == "Final enhanced":
+            return np.asarray(self.last_result["final_enhanced"], dtype=np.float32) / 255.0
+        if mode == "Valid field mask":
+            mask = np.asarray(self.last_result["valid_field_mask"], dtype=np.float32)
+            return np.dstack((mask * 0.2, mask * 0.65, mask))
+        if mode == "Crop overlay":
+            return np.asarray(self.last_result["crop_overlay"], dtype=np.float32) / 255.0
+        if mode == "Final cropped":
+            return np.asarray(self.last_result["final_cropped"], dtype=np.float32) / 255.0
+        if mode == "Before/After crop":
+            return np.asarray(self.last_result["before_after_crop"], dtype=np.float32) / 255.0
         if mode == "Before/After same stretch":
             before, after = self.before_after_same_stretch(self.last_result["rgb_original"], self.last_result["rgb_after_neutralization"])
             separator = np.ones((before.shape[0], 4, 3), dtype=np.float32)
@@ -1060,6 +1168,13 @@ class BackgroundCorrectionWindow(tk.Toplevel):
             Image.fromarray(np.uint8(normalise_preview(self.last_result["corrected_stacked"][band]) * 255)).save(output_dir / f"band_{band}_corrected.png")
         Image.fromarray(np.uint8(normalise_preview(self.last_result["rgb_before_neutralization"]) * 255)).save(output_dir / "rgb_before_neutralization.png")
         Image.fromarray(np.uint8(normalise_preview(self.last_result["rgb_after_neutralization"]) * 255)).save(output_dir / "rgb_after_neutralization.png")
+        Image.fromarray(np.asarray(self.last_result["final_uncropped"], dtype=np.uint8)).save(output_dir / "final_uncropped.png")
+        Image.fromarray(np.asarray(self.last_result["final_color_balanced"], dtype=np.uint8)).save(output_dir / "final_color_balanced.png")
+        Image.fromarray(np.asarray(self.last_result["final_enhanced"], dtype=np.uint8)).save(output_dir / "final_enhanced.png")
+        Image.fromarray(np.asarray(self.last_result["valid_field_mask"], dtype=np.uint8) * 255).save(output_dir / "valid_field_mask.png")
+        Image.fromarray(np.asarray(self.last_result["crop_overlay"], dtype=np.uint8)).save(output_dir / "crop_overlay.png")
+        Image.fromarray(np.asarray(self.last_result["final_cropped"], dtype=np.uint8)).save(output_dir / "final_cropped.png")
+        Image.fromarray(np.asarray(self.last_result["before_after_crop"], dtype=np.uint8)).save(output_dir / "before_after_crop.png")
         Image.fromarray(np.asarray(self.last_result["final_stretched"], dtype=np.uint8)).save(output_dir / "final_stretched.png")
         self.save_stretch_histogram(output_dir / "stretch_histogram_before_after.png")
         before, after = self.before_after_same_stretch(self.last_result["rgb_original"], self.last_result["rgb_after_neutralization"])

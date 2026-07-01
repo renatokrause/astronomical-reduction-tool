@@ -19,6 +19,10 @@ BACKGROUND_OFF = "off"
 BACKGROUND_MEDIAN_GRID = "median_grid"
 BACKGROUND_POLYNOMIAL = "polynomial"
 BACKGROUND_HYBRID = "hybrid"
+CROP_NONE = "none"
+CROP_AUTOMATIC = "automatic"
+CROP_MANUAL = "manual"
+CROP_MODES = (CROP_NONE, CROP_AUTOMATIC, CROP_MANUAL)
 BACKGROUND_CORRECTION_MODES = (
     BACKGROUND_OFF,
     BACKGROUND_MEDIAN_GRID,
@@ -659,6 +663,324 @@ def neutralize_rgb_background(rgb: np.ndarray, sky_mask: np.ndarray, strength: f
     }
     return neutralized.astype(np.float32), stats
 
+def _as_unit_rgb(rgb: np.ndarray) -> np.ndarray:
+    data = np.asarray(rgb, dtype=np.float32)
+    if data.ndim != 3 or data.shape[2] != 3:
+        raise ValueError("rgb must be an RGB array with shape (height, width, 3).")
+    if float(np.nanmax(data)) > 1.5:
+        data = data / 255.0
+    return np.clip(np.nan_to_num(data, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+
+
+def _as_unit_luminance(rgb_or_luminance: np.ndarray) -> np.ndarray:
+    data = np.asarray(rgb_or_luminance, dtype=np.float32)
+    if data.ndim == 3:
+        data = np.median(_as_unit_rgb(data), axis=2)
+    elif float(np.nanmax(data)) > 1.5:
+        high = float(np.nanpercentile(data, 99.5))
+        low = float(np.nanpercentile(data, 0.5))
+        data = (data - low) / max(high - low, 1e-6)
+    return np.clip(np.nan_to_num(data, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+
+
+def _crop_tuple(crop_box: tuple[int, int, int, int], shape: tuple[int, int]) -> tuple[int, int, int, int]:
+    height, width = shape
+    x0, y0, x1, y1 = [int(round(value)) for value in crop_box]
+    x0 = min(max(0, x0), max(0, width - 2))
+    y0 = min(max(0, y0), max(0, height - 2))
+    x1 = max(x0 + 1, min(width, x1))
+    y1 = max(y0 + 1, min(height, y1))
+    return x0, y0, x1, y1
+
+
+def crop_array(image: np.ndarray, crop_box: tuple[int, int, int, int]) -> np.ndarray:
+    x0, y0, x1, y1 = _crop_tuple(crop_box, image.shape[:2])
+    return np.asarray(image)[y0:y1, x0:x1].copy()
+
+
+def estimate_valid_field_crop(
+    rgb_or_luminance,
+    threshold_mode="gradient",
+    margin_px=20,
+    max_crop_percent=20,
+):
+    luminance = _as_unit_luminance(rgb_or_luminance)
+    height, width = luminance.shape
+    if height < 10 or width < 10:
+        return (0, 0, width, height), np.ones((height, width), dtype=bool), {}
+
+    try:
+        from scipy.ndimage import gaussian_filter
+
+        smooth = gaussian_filter(luminance, sigma=max(8.0, min(height, width) / 35.0), mode="nearest")
+    except Exception:
+        smooth = luminance
+
+    center = smooth[int(height * 0.35):int(height * 0.65), int(width * 0.35):int(width * 0.65)]
+    if center.size == 0:
+        center = smooth
+    center_median = float(np.median(center))
+    center_mad = float(np.median(np.abs(center - center_median)))
+    robust_sigma = max(1.4826 * center_mad, 0.01)
+    quality = np.abs(smooth - center_median)
+    threshold = max(2.8 * robust_sigma, 0.08)
+    if str(threshold_mode).lower() == "brightness":
+        quality = smooth - center_median
+        threshold = max(2.4 * robust_sigma, 0.06)
+    valid_mask = quality <= threshold
+
+    max_x = int(width * min(max(float(max_crop_percent), 0.0), 45.0) / 100.0)
+    max_y = int(height * min(max(float(max_crop_percent), 0.0), 45.0) / 100.0)
+    step_x = max(4, width // 120)
+    step_y = max(4, height // 120)
+    x0, y0, x1, y1 = 0, 0, width, height
+
+    def bad_fraction(mask: np.ndarray) -> float:
+        return 1.0 - float(np.mean(mask)) if mask.size else 0.0
+
+    corner_w = max(step_x * 3, width // 24)
+    corner_h = max(step_y * 3, height // 24)
+
+    def corner_bad(y_slice: slice, x_slice: slice) -> bool:
+        return bad_fraction(valid_mask[y_slice, x_slice]) > 0.08
+
+    changed = True
+    while changed:
+        changed = False
+        top_bad = (
+            corner_bad(slice(y0, min(y1, y0 + corner_h)), slice(x0, min(x1, x0 + corner_w)))
+            or corner_bad(slice(y0, min(y1, y0 + corner_h)), slice(max(x0, x1 - corner_w), x1))
+        )
+        bottom_bad = (
+            corner_bad(slice(max(y0, y1 - corner_h), y1), slice(x0, min(x1, x0 + corner_w)))
+            or corner_bad(slice(max(y0, y1 - corner_h), y1), slice(max(x0, x1 - corner_w), x1))
+        )
+        left_bad = (
+            corner_bad(slice(y0, min(y1, y0 + corner_h)), slice(x0, min(x1, x0 + corner_w)))
+            or corner_bad(slice(max(y0, y1 - corner_h), y1), slice(x0, min(x1, x0 + corner_w)))
+        )
+        right_bad = (
+            corner_bad(slice(y0, min(y1, y0 + corner_h)), slice(max(x0, x1 - corner_w), x1))
+            or corner_bad(slice(max(y0, y1 - corner_h), y1), slice(max(x0, x1 - corner_w), x1))
+        )
+        if y0 + step_y < y1 and y0 < max_y and (bad_fraction(valid_mask[y0:y0 + step_y, x0:x1]) > 0.18 or top_bad):
+            y0 += step_y
+            changed = True
+        if y1 - step_y > y0 and height - y1 < max_y and (bad_fraction(valid_mask[y1 - step_y:y1, x0:x1]) > 0.18 or bottom_bad):
+            y1 -= step_y
+            changed = True
+        if x0 + step_x < x1 and x0 < max_x and (bad_fraction(valid_mask[y0:y1, x0:x0 + step_x]) > 0.18 or left_bad):
+            x0 += step_x
+            changed = True
+        if x1 - step_x > x0 and width - x1 < max_x and (bad_fraction(valid_mask[y0:y1, x1 - step_x:x1]) > 0.18 or right_bad):
+            x1 -= step_x
+            changed = True
+    if (x0, y0, x1, y1) != (0, 0, width, height):
+        margin = max(0, int(margin_px))
+        x0 = min(max_x, x0 + margin)
+        y0 = min(max_y, y0 + margin)
+        x1 = max(width - max_x, x1 - margin)
+        y1 = max(height - max_y, y1 - margin)
+
+    min_width = int(width * (1.0 - min(max(float(max_crop_percent), 0.0), 45.0) / 100.0))
+    min_height = int(height * (1.0 - min(max(float(max_crop_percent), 0.0), 45.0) / 100.0))
+    if x1 - x0 < min_width:
+        center_x = (x0 + x1) // 2
+        x0 = max(0, center_x - min_width // 2)
+        x1 = min(width, x0 + min_width)
+        x0 = max(0, x1 - min_width)
+    if y1 - y0 < min_height:
+        center_y = (y0 + y1) // 2
+        y0 = max(0, center_y - min_height // 2)
+        y1 = min(height, y0 + min_height)
+        y0 = max(0, y1 - min_height)
+
+    crop_box = _crop_tuple((x0, y0, x1, y1), (height, width))
+    stats = {
+        "threshold_mode": str(threshold_mode),
+        "center_median": center_median,
+        "threshold": float(threshold),
+        "crop_box": list(crop_box),
+        "crop_percent_width": float((width - (crop_box[2] - crop_box[0])) * 100.0 / max(1, width)),
+        "crop_percent_height": float((height - (crop_box[3] - crop_box[1])) * 100.0 / max(1, height)),
+        "valid_pixels_percent": float(np.mean(valid_mask) * 100.0),
+    }
+    return crop_box, valid_mask, stats
+
+
+def final_background_color_balance(rgb_stretched, sky_mask, strength=0.5, target="neutral"):
+    data = _as_unit_rgb(rgb_stretched)
+    mask = np.asarray(sky_mask, dtype=bool)
+    if mask.shape != data.shape[:2] or not np.any(mask):
+        mask = np.ones(data.shape[:2], dtype=bool)
+    medians = np.array([float(np.median(data[..., channel][mask])) for channel in range(3)], dtype=np.float32)
+    target_value = float(np.median(medians)) if target == "neutral" else float(target)
+    raw_factors = target_value / np.maximum(medians, 1e-6)
+    amount = min(1.0, max(0.0, float(strength)))
+    factors = 1.0 + amount * (raw_factors - 1.0)
+    factors = np.clip(factors, 0.75, 1.25)
+    balanced = np.clip(data * factors.reshape(1, 1, 3), 0.0, 1.0)
+    after = np.array([float(np.median(balanced[..., channel][mask])) for channel in range(3)], dtype=np.float32)
+    stats = {
+        "final_sky_median_before_color_balance": medians.tolist(),
+        "final_sky_median_after_color_balance": after.tolist(),
+        "color_balance_factors": factors.astype(float).tolist(),
+        "color_balance_strength": amount,
+        "color_balance_target": target_value,
+    }
+    return np.uint8(np.clip(balanced, 0, 1) * 255), stats
+
+
+def enhance_luminance_contrast(rgb, amount=0.15, protected_background=True):
+    data = _as_unit_rgb(rgb)
+    luminance = np.clip(np.median(data, axis=2), 0.0, 1.0)
+    try:
+        from scipy.ndimage import gaussian_filter
+
+        blurred = gaussian_filter(luminance, sigma=max(2.0, min(luminance.shape) / 160.0), mode="nearest")
+    except Exception:
+        blurred = luminance
+    detail = luminance - blurred
+    sky_floor = float(np.percentile(luminance, 45.0))
+    core_limit = float(np.percentile(luminance, 99.2))
+    signal_mask = np.clip((luminance - sky_floor) / max(core_limit - sky_floor, 1e-6), 0.0, 1.0)
+    if protected_background:
+        signal_mask = signal_mask ** 1.5
+    core_rolloff = 1.0 - np.clip((luminance - core_limit) / max(1.0 - core_limit, 1e-6), 0.0, 1.0)
+    strength = min(0.5, max(0.0, float(amount)))
+    new_luminance = luminance + strength * detail * signal_mask * core_rolloff
+    new_luminance = np.clip(new_luminance, 0.0, 1.0)
+    ratio = np.divide(new_luminance, np.maximum(luminance, 1e-6))
+    enhanced = np.clip(data * ratio[..., None], 0.0, 1.0)
+    stats = {
+        "luminance_contrast_amount": strength,
+        "protected_background": bool(protected_background),
+        "luminance_median_before": float(np.median(luminance)),
+        "luminance_median_after": float(np.median(np.median(enhanced, axis=2))),
+    }
+    return np.uint8(enhanced * 255), stats
+
+
+def crop_overlay_image(rgb, crop_box: tuple[int, int, int, int]) -> np.ndarray:
+    image = np.array(_as_unit_rgb(rgb), copy=True)
+    x0, y0, x1, y1 = _crop_tuple(crop_box, image.shape[:2])
+    overlay = image * 0.45
+    overlay[y0:y1, x0:x1] = image[y0:y1, x0:x1]
+    overlay[max(0, y0 - 2):min(image.shape[0], y0 + 2), x0:x1] = (0.3, 0.8, 1.0)
+    overlay[max(0, y1 - 2):min(image.shape[0], y1 + 2), x0:x1] = (0.3, 0.8, 1.0)
+    overlay[y0:y1, max(0, x0 - 2):min(image.shape[1], x0 + 2)] = (0.3, 0.8, 1.0)
+    overlay[y0:y1, max(0, x1 - 2):min(image.shape[1], x1 + 2)] = (0.3, 0.8, 1.0)
+    return np.uint8(np.clip(overlay, 0, 1) * 255)
+
+
+def before_after_crop_image(rgb, crop_box: tuple[int, int, int, int]) -> np.ndarray:
+    original = _as_unit_rgb(rgb)
+    cropped = _as_unit_rgb(crop_array(rgb, crop_box))
+    height, width = original.shape[:2]
+    crop_height, crop_width = cropped.shape[:2]
+    canvas = np.zeros((height, width * 2 + 8, 3), dtype=np.float32)
+    canvas[:, :width] = original
+    canvas[:, width:width + 8] = 1.0
+    scale = min(width / max(1, crop_width), height / max(1, crop_height))
+    new_w = max(1, int(crop_width * scale))
+    new_h = max(1, int(crop_height * scale))
+    try:
+        from PIL import Image
+
+        resized = np.asarray(Image.fromarray(np.uint8(cropped * 255)).resize((new_w, new_h), Image.Resampling.LANCZOS), dtype=np.float32) / 255.0
+    except Exception:
+        resized = cropped[:new_h, :new_w]
+    y = (height - new_h) // 2
+    x = width + 8 + (width - new_w) // 2
+    canvas[y:y + new_h, x:x + new_w] = resized
+    return np.uint8(np.clip(canvas, 0, 1) * 255)
+
+
+def apply_final_export_adjustments(
+    rgb_stretched,
+    sky_mask=None,
+    crop_mode=CROP_AUTOMATIC,
+    manual_crop_box=None,
+    crop_margin_px=20,
+    crop_max_percent=20,
+    color_balance=True,
+    color_balance_strength=0.5,
+    enhance_luminance=True,
+    enhance_amount=0.15,
+):
+    final_uncropped = np.asarray(rgb_stretched, dtype=np.uint8)
+    working = final_uncropped
+    stats: dict[str, object] = {}
+    mask = np.asarray(sky_mask, dtype=bool) if sky_mask is not None else np.ones(working.shape[:2], dtype=bool)
+    if mask.shape != working.shape[:2]:
+        mask = np.ones(working.shape[:2], dtype=bool)
+
+    if color_balance:
+        working, balance_stats = final_background_color_balance(working, mask, strength=color_balance_strength)
+        stats.update(balance_stats)
+    else:
+        stats.update({
+            "final_sky_median_before_color_balance": [0.0, 0.0, 0.0],
+            "final_sky_median_after_color_balance": [0.0, 0.0, 0.0],
+            "color_balance_factors": [1.0, 1.0, 1.0],
+        })
+    final_color_balanced = working
+
+    if enhance_luminance:
+        working, enhance_stats = enhance_luminance_contrast(working, amount=enhance_amount, protected_background=True)
+        stats.update(enhance_stats)
+    else:
+        stats.update({"luminance_contrast_amount": 0.0, "protected_background": True})
+    final_enhanced = working
+
+    valid_field_mask = np.ones(working.shape[:2], dtype=bool)
+    crop_stats: dict[str, object] = {}
+    if crop_mode == CROP_MANUAL and manual_crop_box is not None:
+        crop_box = _crop_tuple(tuple(manual_crop_box), working.shape[:2])
+        crop_stats = {
+            "crop_box": list(crop_box),
+            "crop_percent_width": float((working.shape[1] - (crop_box[2] - crop_box[0])) * 100.0 / max(1, working.shape[1])),
+            "crop_percent_height": float((working.shape[0] - (crop_box[3] - crop_box[1])) * 100.0 / max(1, working.shape[0])),
+            "threshold_mode": "manual",
+        }
+    elif crop_mode == CROP_AUTOMATIC:
+        crop_box, valid_field_mask, crop_stats = estimate_valid_field_crop(
+            working,
+            threshold_mode="gradient",
+            margin_px=crop_margin_px,
+            max_crop_percent=crop_max_percent,
+        )
+    else:
+        crop_box = (0, 0, working.shape[1], working.shape[0])
+        crop_stats = {
+            "crop_box": list(crop_box),
+            "crop_percent_width": 0.0,
+            "crop_percent_height": 0.0,
+            "threshold_mode": "none",
+        }
+    final_cropped = crop_array(working, crop_box)
+    stats.update(crop_stats)
+    debug_images = {
+        "final_uncropped": final_uncropped,
+        "final_color_balanced": final_color_balanced,
+        "final_enhanced": final_enhanced,
+        "valid_field_mask": np.uint8(valid_field_mask.astype(np.float32) * 255),
+        "crop_overlay": crop_overlay_image(working, crop_box),
+        "final_cropped": final_cropped,
+        "before_after_crop": before_after_crop_image(working, crop_box),
+    }
+    return {
+        "final": final_cropped,
+        "final_uncropped": final_uncropped,
+        "final_color_balanced": final_color_balanced,
+        "final_enhanced": final_enhanced,
+        "final_cropped": final_cropped,
+        "valid_field_mask": valid_field_mask,
+        "crop_box": crop_box,
+        "stats": stats,
+        "debug_images": debug_images,
+    }
+
 
 def final_stretch_rgb(
     rgb: np.ndarray,
@@ -752,6 +1074,15 @@ def run_reduction(
     background_sigma_clip: bool = True,
     background_sigma_clip_sigma: float = 3.0,
     background_correction_strength: float = 1.0,
+    auto_crop_valid_field: bool = True,
+    valid_field_crop_mode: str = CROP_AUTOMATIC,
+    valid_field_crop_margin: int = 20,
+    valid_field_max_crop_percent: float = 20.0,
+    manual_crop_box: tuple[int, int, int, int] | None = None,
+    final_color_balance: bool = True,
+    final_color_balance_strength: float = 0.5,
+    enhance_final_luminance: bool = True,
+    final_luminance_contrast_amount: float = 0.15,
 ) -> ReductionResult:
     paths.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -759,7 +1090,8 @@ def run_reduction(
         raise ValueError(f"Unsupported alignment mode: {alignment_mode}.")
     if background_correction not in BACKGROUND_CORRECTION_MODES:
         raise ValueError(f"Unsupported background correction mode: {background_correction}.")
-
+    if valid_field_crop_mode not in CROP_MODES:
+        raise ValueError(f"Unsupported valid field crop mode: {valid_field_crop_mode}.")
     def report(progress: float, message: str) -> None:
         if progress_callback:
             progress_callback(progress, message)
@@ -871,8 +1203,29 @@ def run_reduction(
         stretch_mask = np.logical_and.reduce(sky_masks)
     else:
         stretch_mask = np.ones(linear_rgb.shape[:2], dtype=bool)
-    rgb, stretch_stats = final_stretch_rgb(linear_rgb, sky_mask=stretch_mask, stretch_strength=q_value)
+    rgb_uncropped, stretch_stats = final_stretch_rgb(linear_rgb, sky_mask=stretch_mask, stretch_strength=q_value)
     background_stats["stretch"] = stretch_stats
+    crop_mode = valid_field_crop_mode if auto_crop_valid_field else CROP_NONE
+    final_adjustments = apply_final_export_adjustments(
+        rgb_uncropped,
+        sky_mask=stretch_mask,
+        crop_mode=crop_mode,
+        manual_crop_box=manual_crop_box,
+        crop_margin_px=valid_field_crop_margin,
+        crop_max_percent=valid_field_max_crop_percent,
+        color_balance=final_color_balance,
+        color_balance_strength=final_color_balance_strength,
+        enhance_luminance=enhance_final_luminance,
+        enhance_amount=final_luminance_contrast_amount,
+    )
+    rgb = np.asarray(final_adjustments["final"], dtype=np.uint8)
+    background_stats["final_adjustments"] = final_adjustments["stats"]
+    background_stats["crop_box"] = final_adjustments["stats"].get("crop_box")
+    background_stats["crop_percent_width"] = final_adjustments["stats"].get("crop_percent_width")
+    background_stats["crop_percent_height"] = final_adjustments["stats"].get("crop_percent_height")
+    background_stats["final_sky_median_before_color_balance"] = final_adjustments["stats"].get("final_sky_median_before_color_balance")
+    background_stats["final_sky_median_after_color_balance"] = final_adjustments["stats"].get("final_sky_median_after_color_balance")
+    background_stats["color_balance_factors"] = final_adjustments["stats"].get("color_balance_factors")
     if "bands" in background_stats:
         background_stats["gradient_metrics"] = {
             band: stats.get("gradient_metrics", {})
