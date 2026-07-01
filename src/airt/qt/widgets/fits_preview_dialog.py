@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QListWidget,
+    QListWidgetItem,
     QLabel,
     QPushButton,
     QGraphicsView,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSplitter,
     QWidget,
+    QAbstractItemView,
 )
 
 
@@ -27,14 +29,9 @@ class ZoomableGraphicsView(QGraphicsView):
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setRenderHints(self.renderHints())
 
     def wheelEvent(self, event: QWheelEvent):
-        if event.angleDelta().y() > 0:
-            factor = 1.25
-        else:
-            factor = 0.8
-
+        factor = 1.25 if event.angleDelta().y() > 0 else 0.8
         self.scale(factor, factor)
 
 
@@ -55,7 +52,7 @@ class FitsPreviewDialog(QDialog):
 
         top = QHBoxLayout()
 
-        self.info_label = QLabel("Select a file to preview.")
+        self.info_label = QLabel("Select one or more files to preview.")
         self.info_label.setWordWrap(True)
 
         self.fit_button = QPushButton("Fit")
@@ -67,12 +64,8 @@ class FitsPreviewDialog(QDialog):
         self.zoom_out_button = QPushButton("Zoom out")
         self.zoom_out_button.clicked.connect(lambda: self.view.scale(0.8, 0.8))
 
-        self.zoom_100_button = QPushButton("100%")
-        self.zoom_100_button.clicked.connect(self.zoom_100)
-
         top.addWidget(self.info_label, 1)
         top.addWidget(self.fit_button)
-        top.addWidget(self.zoom_100_button)
         top.addWidget(self.zoom_in_button)
         top.addWidget(self.zoom_out_button)
 
@@ -80,21 +73,42 @@ class FitsPreviewDialog(QDialog):
 
         splitter = QSplitter(Qt.Horizontal)
 
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+
+        list_buttons = QHBoxLayout()
+
+        self.select_all_button = QPushButton("Select all")
+        self.select_all_button.clicked.connect(self.select_all_files)
+
+        self.clear_button = QPushButton("Clear")
+        self.clear_button.clicked.connect(self.clear_selection)
+
+        list_buttons.addWidget(self.select_all_button)
+        list_buttons.addWidget(self.clear_button)
+
         self.file_list = QListWidget()
-        self.file_list.setMinimumWidth(320)
+        self.file_list.setMinimumWidth(360)
+        self.file_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.file_list.itemSelectionChanged.connect(self.load_selected_files)
 
         for item in self.files:
-            label = f"{item.kind.upper()}  {item.band}  —  {Path(item.path).name}"
-            self.file_list.addItem(label)
+            label = f"{item.kind.upper()}  {item.band if item.band != '-' else 'None'}  —  {Path(item.path).name}"
+            list_item = QListWidgetItem(label)
+            list_item.setData(Qt.UserRole, item.path)
+            self.file_list.addItem(list_item)
 
-        self.file_list.currentRowChanged.connect(self.load_selected_file)
+        left_layout.addLayout(list_buttons)
+        left_layout.addWidget(self.file_list, 1)
 
         self.scene = QGraphicsScene(self)
         self.view = ZoomableGraphicsView()
         self.view.setScene(self.scene)
         self.view.setBackgroundBrush(Qt.black)
 
-        splitter.addWidget(self.file_list)
+        splitter.addWidget(left_panel)
         splitter.addWidget(self.view)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -113,17 +127,44 @@ class FitsPreviewDialog(QDialog):
         if self.files:
             self.file_list.setCurrentRow(0)
 
-    def load_selected_file(self, row: int):
-        if row < 0 or row >= len(self.files):
+    def select_all_files(self):
+        self.file_list.selectAll()
+
+    def clear_selection(self):
+        self.file_list.clearSelection()
+        self.scene.clear()
+        self.current_pixmap_item = None
+        self.info_label.setText("No files selected.")
+
+    def selected_file_infos(self):
+        selected_paths = {
+            item.data(Qt.UserRole)
+            for item in self.file_list.selectedItems()
+        }
+
+        return [
+            info
+            for info in self.files
+            if info.path in selected_paths
+        ]
+
+    def load_selected_files(self):
+        selected = self.selected_file_infos()
+
+        if not selected:
+            self.scene.clear()
+            self.current_pixmap_item = None
+            self.info_label.setText("No files selected.")
             return
 
-        info = self.files[row]
-        path = Path(info.path)
-
         try:
-            image = self.load_fits_as_qimage(path)
+            image = self.load_preview_image(selected)
         except Exception as exc:
-            QMessageBox.warning(self, "Preview failed", f"Could not preview file:\n\n{path}\n\n{exc}")
+            QMessageBox.warning(
+                self,
+                "Preview failed",
+                f"Could not preview selected files:\n\n{exc}",
+            )
             return
 
         pixmap = QPixmap.fromImage(image)
@@ -132,20 +173,62 @@ class FitsPreviewDialog(QDialog):
         self.current_pixmap_item = self.scene.addPixmap(pixmap)
         self.scene.setSceneRect(self.current_pixmap_item.boundingRect())
 
-        size_text = f"{info.naxis1} × {info.naxis2}" if info.naxis1 and info.naxis2 else f"{pixmap.width()} × {pixmap.height()}"
-        exposure = "-" if info.exptime is None else f"{info.exptime:g}s"
+        if len(selected) == 1:
+            info = selected[0]
+            path = Path(info.path)
+            size_text = (
+                f"{info.naxis1} × {info.naxis2}"
+                if info.naxis1 and info.naxis2
+                else f"{pixmap.width()} × {pixmap.height()}"
+            )
+            exposure = "-" if info.exptime is None else f"{info.exptime:g}s"
 
-        self.info_label.setText(
-            f"{path.name} | Type: {info.kind.upper()} | Band: {info.band} | Exposure: {exposure} | Size: {size_text}"
-        )
+            self.info_label.setText(
+                f"{path.name} | Type: {info.kind.upper()} | Band: {info.band if info.band != '-' else 'None'} "
+                f"| Exposure: {exposure} | Size: {size_text}"
+            )
+        else:
+            kinds = sorted({info.kind.upper() for info in selected})
+            bands = sorted({info.band if info.band != '-' else 'None' for info in selected})
+            self.info_label.setText(
+                f"Combined preview of {len(selected)} selected files | "
+                f"Types: {', '.join(kinds)} | Bands: {', '.join(bands)} | Combination: median"
+            )
 
         self.fit_to_view()
 
-    def load_fits_as_qimage(self, path: Path) -> QImage:
+    def load_preview_image(self, selected) -> QImage:
+        arrays = []
+        reference_shape = None
+
+        for info in selected:
+            data = self.load_fits_array(Path(info.path))
+
+            if reference_shape is None:
+                reference_shape = data.shape
+
+            if data.shape != reference_shape:
+                raise ValueError(
+                    "Selected files have different dimensions. "
+                    "Preview combination requires files with the same image size."
+                )
+
+            arrays.append(data)
+
+        if not arrays:
+            raise ValueError("No files selected.")
+
+        if len(arrays) == 1:
+            combined = arrays[0]
+        else:
+            combined = np.nanmedian(np.stack(arrays, axis=0), axis=0)
+
+        return self.array_to_qimage(combined)
+
+    def load_fits_array(self, path: Path) -> np.ndarray:
         from astropy.io import fits
 
         data = fits.getdata(path, 0)
-
         data = np.asarray(data)
 
         if data.ndim > 2:
@@ -154,8 +237,12 @@ class FitsPreviewDialog(QDialog):
             if data.ndim > 2:
                 data = data[0]
 
-        data = data.astype(np.float32, copy=False)
+        if data.ndim != 2:
+            raise ValueError(f"Unsupported FITS image dimensions for {path.name}: {data.shape}")
 
+        return data.astype(np.float32, copy=False)
+
+    def array_to_qimage(self, data: np.ndarray) -> QImage:
         finite = np.isfinite(data)
         if not np.any(finite):
             raise ValueError("Image has no finite pixels.")
@@ -195,7 +282,3 @@ class FitsPreviewDialog(QDialog):
 
         self.view.resetTransform()
         self.view.fitInView(self.current_pixmap_item, Qt.KeepAspectRatio)
-
-    def zoom_100(self):
-        self.view.resetTransform()
-
