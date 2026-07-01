@@ -1,0 +1,237 @@
+﻿from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import (
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QStackedWidget,
+    QFileDialog,
+    QMessageBox,
+)
+
+from airt.project import ReductionProject, load_project, save_project
+from airt.qt.widgets.step_sidebar import StepSidebar
+from airt.qt.widgets.footer_bar import FooterBar
+from airt.qt.wizard.welcome_step import WelcomeStep
+from airt.qt.wizard.folders_step import FolderSelectionStep
+from airt.qt.wizard.placeholder_step import PlaceholderStep
+from airt.qt.wizard.files_step import FilesStep
+from airt.qt.wizard.frame_review_step import FrameReviewStep
+from airt.qt.wizard.preset_step import PresetStep
+from airt.qt.wizard.alignment_step import AlignmentStep
+from airt.qt.theme import apply_dark_theme
+
+
+def icons_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "resources" / "icons"
+
+
+class WizardWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.project: ReductionProject | None = None
+
+        self.setWindowTitle("Astronomical Image Reduction Tool")
+        self.resize(1500, 960)
+        self.setMinimumSize(1200, 800)
+
+        root = QWidget()
+        self.setCentralWidget(root)
+
+        main_layout = QVBoxLayout(root)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        self.header = self._build_header()
+        main_layout.addWidget(self.header)
+
+        content = QWidget()
+        content_layout = QHBoxLayout(content)
+        content_layout.setContentsMargins(14, 0, 14, 0)
+        content_layout.setSpacing(12)
+
+        self.sidebar = StepSidebar()
+        self.sidebar.setFixedWidth(260)
+
+        self.stack = QStackedWidget()
+
+        content_layout.addWidget(self.sidebar)
+        content_layout.addWidget(self.stack, 1)
+
+        main_layout.addWidget(content, 1)
+
+        self.footer = FooterBar()
+        main_layout.addWidget(self.footer)
+
+        self.steps = [
+            WelcomeStep(self),
+            FolderSelectionStep(self),
+            FilesStep(self),
+            FrameReviewStep(self),
+            PresetStep(self),
+            AlignmentStep(self),
+            PlaceholderStep(self, "Background correction", "Preview and apply gradient removal, neutralization, crop and final adjustments."),
+            PlaceholderStep(self, "Final export", "Review the final image and export PNG/TIFF outputs."),
+            PlaceholderStep(self, "Done", "Open output folder or start a new project."),
+        ]
+
+        for step in self.steps:
+            self.stack.addWidget(step)
+
+        self.footer.back_button.clicked.connect(self.go_back)
+        self.footer.next_button.clicked.connect(self.go_next)
+        self.footer.save_button.clicked.connect(self.save_current_project)
+        self.footer.cancel_button.clicked.connect(self.close)
+
+        self.steps[0].new_card.clicked.connect(self.start_new_project)
+        self.steps[0].open_card.clicked.connect(self.open_project_dialog)
+
+        apply_dark_theme(self)
+        self.go_to_step(0)
+
+    def _build_header(self) -> QWidget:
+        header = QWidget()
+        header.setObjectName("header")
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(24, 18, 24, 18)
+        layout.setSpacing(16)
+
+        icon_label = QLabel()
+        icon_label.setObjectName("headerIcon")
+        icon_label.setFixedSize(64, 64)
+        icon_label.setAlignment(Qt.AlignCenter)
+
+        header_icon_path = icons_dir() / "header_andromeda.png"
+        if header_icon_path.exists():
+            pixmap = QPixmap(str(header_icon_path))
+            icon_label.setPixmap(
+                pixmap.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+
+        title_box = QVBoxLayout()
+        title_box.setSpacing(4)
+
+        title = QLabel("Astronomical Image Reduction Tool")
+        title.setObjectName("appTitle")
+        subtitle = QLabel("Calibrate · Align · Stack · Color · Export")
+        subtitle.setObjectName("appSubtitle")
+
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+
+        self.project_icon = QLabel("▱")
+        self.project_icon.setObjectName("projectIcon")
+        self.project_icon.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.project_label = QLabel("No project loaded")
+        self.project_label.setObjectName("projectLabel")
+        self.project_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        project_box = QHBoxLayout()
+        project_box.setSpacing(10)
+        project_box.addWidget(self.project_icon)
+        project_box.addWidget(self.project_label)
+
+        layout.addWidget(icon_label)
+        layout.addLayout(title_box)
+        layout.addStretch(1)
+        layout.addLayout(project_box)
+
+        return header
+
+    def ensure_project(self) -> ReductionProject:
+        if self.project is None:
+            self.project = ReductionProject()
+        return self.project
+
+    def start_new_project(self) -> None:
+        self.project = ReductionProject()
+        self.update_project_label()
+        self.go_to_step(1)
+
+    def open_project_dialog(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open AIRT project",
+            "",
+            "AIRT Project (*.airt.json);;JSON Files (*.json);;All Files (*)",
+        )
+
+        if not path:
+            return
+
+        try:
+            self.project = load_project(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Could not open project", str(exc))
+            return
+
+        self.update_project_label()
+        self.footer.set_status(f"Project loaded: {path}")
+        self.go_to_step(1)
+
+    def update_project_label(self) -> None:
+        if not self.project:
+            self.project_label.setText("No project loaded")
+            return
+
+        if self.project.project_file:
+            self.project_label.setText(Path(self.project.project_file).name)
+        elif self.project.object_name:
+            self.project_label.setText(self.project.object_name)
+        else:
+            self.project_label.setText("Unsaved project")
+
+    def save_current_project(self) -> None:
+        if not self.project:
+            QMessageBox.information(self, "No project", "There is no project to save.")
+            return
+
+        if not self.project.project_file:
+            QMessageBox.warning(
+                self,
+                "Project path not defined",
+                "Go to the Folders step and define the project root and object name first.",
+            )
+            return
+
+        try:
+            save_project(self.project)
+        except Exception as exc:
+            QMessageBox.critical(self, "Could not save project", str(exc))
+            return
+
+        self.update_project_label()
+        self.footer.set_status(f"Project saved: {self.project.project_file}")
+
+    def go_to_step(self, index: int) -> None:
+        if index < 0 or index >= len(self.steps):
+            return
+
+        self.stack.setCurrentIndex(index)
+        self.sidebar.set_current_step(index)
+
+        step = self.steps[index]
+        if hasattr(step, "on_enter"):
+            step.on_enter()
+
+    def go_back(self) -> None:
+        self.go_to_step(self.stack.currentIndex() - 1)
+
+    def go_next(self) -> None:
+        step = self.steps[self.stack.currentIndex()]
+        if hasattr(step, "on_next"):
+            handled = step.on_next()
+            if handled is False:
+                return
+
+        self.go_to_step(self.stack.currentIndex() + 1)
+
+
