@@ -83,6 +83,11 @@ class FinalCompositionStep(QWidget):
         composition_title = QLabel("Composition")
         composition_title.setObjectName("sectionTitle")
 
+        self.rendering_mode_combo = QComboBox()
+        self.rendering_mode_combo.addItem("Standard", "standard")
+        self.rendering_mode_combo.addItem("Lupton", "lupton")
+        self.rendering_mode_combo.currentIndexChanged.connect(self.on_settings_changed)
+
         self.rendering_combo = QComboBox()
         self.rendering_combo.addItem("Grayscale", "grayscale")
         self.rendering_combo.addItem("Color", "color")
@@ -113,21 +118,58 @@ class FinalCompositionStep(QWidget):
         self.contrast_spin.setSingleStep(0.10)
         self.contrast_spin.valueChanged.connect(self.on_settings_changed)
 
+        self.lupton_stretch_spin = QDoubleSpinBox()
+        self.lupton_stretch_spin.setRange(0.1, 100.0)
+        self.lupton_stretch_spin.setDecimals(2)
+        self.lupton_stretch_spin.setSingleStep(0.5)
+        self.lupton_stretch_spin.setValue(5.0)
+        self.lupton_stretch_spin.valueChanged.connect(self.on_settings_changed)
+
+        self.lupton_q_spin = QDoubleSpinBox()
+        self.lupton_q_spin.setRange(0.1, 100.0)
+        self.lupton_q_spin.setDecimals(2)
+        self.lupton_q_spin.setSingleStep(0.5)
+        self.lupton_q_spin.setValue(8.0)
+        self.lupton_q_spin.valueChanged.connect(self.on_settings_changed)
+
+        self.crop_enabled_check = QCheckBox("Crop borders")
+        self.crop_enabled_check.stateChanged.connect(self.on_settings_changed)
+
+        self.crop_percent_spin = QDoubleSpinBox()
+        self.crop_percent_spin.setRange(0.0, 25.0)
+        self.crop_percent_spin.setDecimals(1)
+        self.crop_percent_spin.setSingleStep(1.0)
+        self.crop_percent_spin.valueChanged.connect(self.on_settings_changed)
+
         composition_layout.addWidget(composition_title, 0, 0, 1, 4)
-        composition_layout.addWidget(QLabel("Rendering"), 1, 0)
-        composition_layout.addWidget(self.rendering_combo, 1, 1)
-        composition_layout.addWidget(QLabel("Stretch"), 1, 2)
-        composition_layout.addWidget(self.stretch_combo, 1, 3)
-        composition_layout.addWidget(QLabel("Saturation"), 2, 0)
-        composition_layout.addWidget(self.saturation_spin, 2, 1)
-        composition_layout.addWidget(QLabel("Brightness"), 2, 2)
-        composition_layout.addWidget(self.brightness_spin, 2, 3)
-        composition_layout.addWidget(QLabel("Contrast"), 3, 0)
-        composition_layout.addWidget(self.contrast_spin, 3, 1)
+
+        composition_layout.addWidget(QLabel("Rendering mode"), 1, 0)
+        composition_layout.addWidget(self.rendering_mode_combo, 1, 1)
+        composition_layout.addWidget(QLabel("Rendering"), 1, 2)
+        composition_layout.addWidget(self.rendering_combo, 1, 3)
+
+        composition_layout.addWidget(QLabel("Stretch"), 2, 0)
+        composition_layout.addWidget(self.stretch_combo, 2, 1)
+        composition_layout.addWidget(QLabel("Lupton stretch"), 2, 2)
+        composition_layout.addWidget(self.lupton_stretch_spin, 2, 3)
+
+        composition_layout.addWidget(QLabel("Lupton Q"), 3, 0)
+        composition_layout.addWidget(self.lupton_q_spin, 3, 1)
+        composition_layout.addWidget(QLabel("Saturation"), 3, 2)
+        composition_layout.addWidget(self.saturation_spin, 3, 3)
+
+        composition_layout.addWidget(QLabel("Brightness"), 4, 0)
+        composition_layout.addWidget(self.brightness_spin, 4, 1)
+        composition_layout.addWidget(QLabel("Contrast"), 4, 2)
+        composition_layout.addWidget(self.contrast_spin, 4, 3)
+
+        composition_layout.addWidget(self.crop_enabled_check, 5, 0)
+        composition_layout.addWidget(QLabel("Crop percent"), 5, 2)
+        composition_layout.addWidget(self.crop_percent_spin, 5, 3)
 
         self.reset_composition_button = QPushButton("Reset")
         self.reset_composition_button.clicked.connect(self.reset_settings)
-        composition_layout.addWidget(self.reset_composition_button, 3, 3)
+        composition_layout.addWidget(self.reset_composition_button, 6, 3)
 
         root.addWidget(composition_card)
 
@@ -238,6 +280,7 @@ class FinalCompositionStep(QWidget):
         root.addWidget(preview_card, 1)
 
         outer.addWidget(scroll)
+        self.update_dynamic_ui_state()
 
     def on_enter(self):
         self.wizard.footer.back_button.setEnabled(True)
@@ -280,14 +323,20 @@ class FinalCompositionStep(QWidget):
         self.open_folder_check.setChecked(bool(export.get("open_output_folder", True)))
 
         self._loading_controls = False
+        self.update_dynamic_ui_state()
 
     def current_composition_settings(self) -> dict:
         return {
+            "rendering_mode": self.rendering_mode_combo.currentData() or "standard",
             "rendering": self.rendering_combo.currentData() or "grayscale",
             "stretch": self.stretch_combo.currentData() or "auto",
+            "lupton_stretch": float(self.lupton_stretch_spin.value()),
+            "lupton_q": float(self.lupton_q_spin.value()),
             "saturation": float(self.saturation_spin.value()),
             "brightness": float(self.brightness_spin.value()),
             "contrast": float(self.contrast_spin.value()),
+            "crop_enabled": bool(self.crop_enabled_check.isChecked()),
+            "crop_percent": float(self.crop_percent_spin.value()),
         }
 
     def current_export_settings(self) -> dict:
@@ -303,7 +352,28 @@ class FinalCompositionStep(QWidget):
             "open_output_folder": bool(self.open_folder_check.isChecked()),
         }
 
+    def update_dynamic_ui_state(self):
+        is_lupton = (self.rendering_mode_combo.currentData() or "standard") == "lupton"
+
+        self.lupton_stretch_spin.setEnabled(is_lupton)
+        self.lupton_q_spin.setEnabled(is_lupton)
+
+        self.lupton_stretch_spin.setToolTip(
+            "Available only when Rendering mode is Lupton." if not is_lupton else "Lupton stretch parameter."
+        )
+        self.lupton_q_spin.setToolTip(
+            "Available only when Rendering mode is Lupton." if not is_lupton else "Lupton Q parameter."
+        )
+
+        crop_enabled = bool(self.crop_enabled_check.isChecked())
+        self.crop_percent_spin.setEnabled(crop_enabled)
+        self.crop_percent_spin.setToolTip(
+            "Enable Crop borders to edit this value." if not crop_enabled else "Percentage cropped from each border."
+        )
+
     def on_settings_changed(self):
+        self.update_dynamic_ui_state()
+
         if self._loading_controls:
             return
 
@@ -326,6 +396,7 @@ class FinalCompositionStep(QWidget):
         self.open_folder_check.setChecked(True)
 
         self._loading_controls = False
+        self.update_dynamic_ui_state()
 
         self.save_to_project()
         self.persist_settings()

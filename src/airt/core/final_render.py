@@ -596,6 +596,79 @@ def apply_visual_adjustments(
     return np.clip(rgb, 0, 1).astype(np.float32, copy=False)
 
 
+def prepare_lupton_channel(channel: np.ndarray) -> np.ndarray:
+    channel = channel.astype(np.float32, copy=True)
+    finite = np.isfinite(channel)
+
+    if not np.any(finite):
+        return np.zeros_like(channel, dtype=np.float32)
+
+    baseline = float(np.nanmedian(channel[finite]))
+    channel = channel - baseline
+    channel = np.nan_to_num(channel, nan=0.0)
+    channel = np.maximum(channel, 0)
+
+    return channel.astype(np.float32, copy=False)
+
+
+def render_lupton_rgb(linear_rgb: np.ndarray, stretch: float = 5.0, q: float = 8.0) -> np.ndarray | None:
+    prepared = np.zeros_like(linear_rgb, dtype=np.float32)
+
+    for index in range(3):
+        prepared[:, :, index] = prepare_lupton_channel(linear_rgb[:, :, index])
+
+    if not np.any(prepared > 0):
+        return None
+
+    try:
+        from astropy.visualization import make_lupton_rgb
+
+        image = make_lupton_rgb(
+            prepared[:, :, 0],
+            prepared[:, :, 1],
+            prepared[:, :, 2],
+            stretch=float(stretch),
+            Q=float(q),
+        )
+
+        image = np.asarray(image)
+
+        if image.dtype == np.uint8:
+            image = image.astype(np.float32) / 255.0
+        else:
+            image = image.astype(np.float32)
+            high = np.nanmax(image) if np.any(np.isfinite(image)) else 1.0
+            if high > 1.0:
+                image = image / high
+
+        return np.clip(image, 0, 1).astype(np.float32, copy=False)
+    except Exception:
+        return None
+
+
+def crop_rgb_borders(rgb: np.ndarray, enabled: bool = False, percent: float = 0.0) -> np.ndarray:
+    if not enabled:
+        return rgb
+
+    percent = float(percent)
+
+    if percent <= 0:
+        return rgb
+
+    percent = float(np.clip(percent, 0.0, 25.0))
+    height, width = rgb.shape[:2]
+    y = int(round(height * percent / 100.0))
+    x = int(round(width * percent / 100.0))
+
+    if y <= 0 and x <= 0:
+        return rgb
+
+    if y * 2 >= height or x * 2 >= width:
+        return rgb
+
+    return rgb[y : height - y, x : width - x, :].astype(np.float32, copy=False)
+
+
 def output_folder_for_project(project) -> Path:
     object_folder = getattr(project, "object_folder", "") or ""
 
@@ -765,7 +838,15 @@ def correct_rgb_background_linear(rgb: np.ndarray, settings: dict) -> np.ndarray
     return corrected.astype(np.float32, copy=False)
 
 
-def compose_final_rgb(project, masters: dict[str, np.ndarray], rendering: str, stretch: str) -> np.ndarray:
+def compose_final_rgb(
+    project,
+    masters: dict[str, np.ndarray],
+    rendering: str,
+    stretch: str,
+    rendering_mode: str = "standard",
+    lupton_stretch: float = 5.0,
+    lupton_q: float = 8.0,
+) -> np.ndarray:
     background_settings = project.output_options.get("background_correction", {}) if project else {}
     apply_to = background_settings.get("apply_to", "per_band")
     color_mapping = project.output_options.get("color_mapping", {}) if project else {}
@@ -825,6 +906,12 @@ def compose_final_rgb(project, masters: dict[str, np.ndarray], rendering: str, s
     if apply_to == "combined":
         linear_rgb = correct_rgb_background_linear(linear_rgb, background_settings)
 
+    if rendering_mode == "lupton":
+        lupton_rgb = render_lupton_rgb(linear_rgb, lupton_stretch, lupton_q)
+
+        if lupton_rgb is not None:
+            return np.clip(lupton_rgb, 0, 1).astype(np.float32, copy=False)
+
     linear_rgb = neutralize_linear_rgb_background(linear_rgb)
     rgb = stretch_rgb_preserve_color(linear_rgb, stretch, luminance)
 
@@ -835,11 +922,16 @@ def build_final_image(project, settings: dict | None = None, progress_callback=N
     settings = settings or {}
     composition = project.output_options.get("final_composition", {}) if project else {}
 
+    rendering_mode = settings.get("rendering_mode", composition.get("rendering_mode", "standard"))
     rendering = settings.get("rendering", composition.get("rendering", "color"))
     stretch = settings.get("stretch", composition.get("stretch", "auto"))
+    lupton_stretch = float(settings.get("lupton_stretch", composition.get("lupton_stretch", 5.0)))
+    lupton_q = float(settings.get("lupton_q", composition.get("lupton_q", 8.0)))
     saturation = float(settings.get("saturation", composition.get("saturation", 1.0)))
     brightness = float(settings.get("brightness", composition.get("brightness", 0.0)))
     contrast = float(settings.get("contrast", composition.get("contrast", 1.0)))
+    crop_enabled = bool(settings.get("crop_enabled", composition.get("crop_enabled", False)))
+    crop_percent = float(settings.get("crop_percent", composition.get("crop_percent", 0.0)))
 
     if progress_callback:
         progress_callback(10, "Building calibration masters and stacking selected bands...")
@@ -849,17 +941,26 @@ def build_final_image(project, settings: dict | None = None, progress_callback=N
     if progress_callback:
         progress_callback(65, "Composing final image and applying background correction...")
 
-    rgb = compose_final_rgb(project, masters, rendering, stretch)
+    rgb = compose_final_rgb(
+        project,
+        masters,
+        rendering,
+        stretch,
+        rendering_mode,
+        lupton_stretch,
+        lupton_q,
+    )
 
     if progress_callback:
         progress_callback(80, "Applying final stretch and visual adjustments...")
 
     rgb = apply_visual_adjustments(rgb, saturation, brightness, contrast)
+    rgb = crop_rgb_borders(rgb, crop_enabled, crop_percent)
 
     return FinalRenderResult(
         image=np.clip(rgb, 0, 1),
         bands=sort_bands_recommended(masters.keys()),
-        mode=rendering,
+        mode=rendering_mode,
         masters=masters,
     )
 

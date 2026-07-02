@@ -124,6 +124,11 @@ class AlignmentStep(QWidget):
         self.adjust_band_combo = QComboBox()
         self.adjust_band_combo.currentIndexChanged.connect(self.on_adjust_band_changed)
 
+        self.alignment_method_combo = QComboBox()
+        self.alignment_method_combo.addItem("Translation", "translation")
+        self.alignment_method_combo.addItem("Astroalign affine", "astroalign_affine")
+        self.alignment_method_combo.currentIndexChanged.connect(self.on_alignment_method_changed)
+
         self.x_spin = QDoubleSpinBox()
         self.x_spin.setRange(-10000, 10000)
         self.x_spin.setDecimals(2)
@@ -144,11 +149,14 @@ class AlignmentStep(QWidget):
         control_grid.addWidget(QLabel("Band to adjust"), 1, 2)
         control_grid.addWidget(self.adjust_band_combo, 1, 3)
 
-        control_grid.addWidget(QLabel("X offset"), 2, 0)
-        control_grid.addWidget(self.x_spin, 2, 1)
+        control_grid.addWidget(QLabel("Alignment method"), 2, 0)
+        control_grid.addWidget(self.alignment_method_combo, 2, 1)
 
-        control_grid.addWidget(QLabel("Y offset"), 2, 2)
-        control_grid.addWidget(self.y_spin, 2, 3)
+        control_grid.addWidget(QLabel("X offset"), 3, 0)
+        control_grid.addWidget(self.x_spin, 3, 1)
+
+        control_grid.addWidget(QLabel("Y offset"), 3, 2)
+        control_grid.addWidget(self.y_spin, 3, 3)
 
         root.addWidget(control_card)
 
@@ -251,6 +259,7 @@ class AlignmentStep(QWidget):
         outer.addWidget(scroll)
 
         self.setFocusPolicy(Qt.StrongFocus)
+        self.update_alignment_method_ui()
 
     def on_enter(self):
         self.wizard.footer.back_button.setEnabled(True)
@@ -262,6 +271,7 @@ class AlignmentStep(QWidget):
         self.load_settings_from_project()
         self.populate_controls()
         self.update_preview(preserve_view=False)
+        self.update_alignment_method_ui()
 
     def on_leave(self, target_index: int):
         self.persist_settings()
@@ -381,6 +391,11 @@ class AlignmentStep(QWidget):
             return
 
         settings = project.output_options.get("alignment_settings", {})
+        method = settings.get("method", settings.get("alignment_method", "translation"))
+        method_index = self.alignment_method_combo.findData(method)
+        if method_index >= 0:
+            self.alignment_method_combo.setCurrentIndex(method_index)
+
         saved_offsets = settings.get("manual_offsets", {}) or getattr(project, "manual_offsets", {}) or {}
 
         for band in self.band_arrays:
@@ -456,6 +471,35 @@ class AlignmentStep(QWidget):
 
     def current_adjust_band(self) -> str:
         return self.adjust_band_combo.currentData() or ""
+
+    def current_alignment_method(self) -> str:
+        return self.alignment_method_combo.currentData() or "translation"
+
+    def update_alignment_method_ui(self):
+        is_translation = self.current_alignment_method() == "translation"
+        self.auto_button.setEnabled(is_translation)
+
+        if is_translation:
+            self.auto_button.setToolTip("Estimate X/Y offsets automatically for translation alignment.")
+        else:
+            self.auto_button.setToolTip(
+                "Auto is only available for Translation. Astroalign affine is applied during final processing."
+            )
+
+    def on_alignment_method_changed(self):
+        self.update_alignment_method_ui()
+
+        if self._loading_controls:
+            return
+
+        self.persist_settings()
+
+        if self.current_alignment_method() == "translation":
+            self.info_text.setText("Translation selected. Auto can estimate X/Y offsets.")
+        else:
+            self.info_text.setText(
+                "Astroalign affine selected. Manual X/Y offsets are applied afterwards as fine tuning."
+            )
 
     def on_reference_band_changed(self):
         if self._loading_controls:
