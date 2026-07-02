@@ -1,0 +1,109 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astronomical-image-reduction-tool"
+version = "0.1.0"
+description = "Astronomical Image Reduction Tool"
+requires-python = ">=3.10"
+dependencies = [
+    "astropy>=6.0",
+    "astroalign>=2.5",
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "Pillow>=10.0",
+    "PySide6>=6.7",
+    "scikit-image>=0.22",
+    "scipy>=1.11",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+airt = [
+    "resources/icons/*",
+    "resources/images/*",
+    "resources/styles/*",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = [
+  ".git",
+  ".venv",
+  "venv",
+  "build",
+  "dist",
+  ".pytest_cache",
+  "__pycache__",
+  "legacy",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "W",
+  "I",
+  "UP",
+  "B",
+  "SIM",
+]
+ignore = [
+  "E501",
+  "B008",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-q --cov=airt --cov-report=term-missing --cov-report=xml"
+pythonpath = ["src"]
+qt_api = "pyside6"
+
+[tool.coverage.run]
+branch = true
+source = ["src/airt"]
+omit = [
+  "*/__main__.py",
+  "*/legacy/*",
+  "*/tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 0
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "venv", "build", "dist", "legacy"]
+skips = ["B101"]
+
+[tool.pyright]
+include = ["src/airt", "tests"]
+exclude = [".venv", "venv", "build", "dist", "legacy"]
+venvPath = "."
+typeCheckingMode = "basic"
+pythonVersion = "3.11"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportPrivateImportUsage = false
+
+[tool.radon]
+exclude = ".venv,venv,build,dist,legacy"
+cc_min = "B"
+mi_min = "B"
+
