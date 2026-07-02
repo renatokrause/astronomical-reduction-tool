@@ -1,14 +1,27 @@
 ﻿from __future__ import annotations
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QGridLayout,
-    QHBoxLayout,
     QLabel,
     QComboBox,
     QFrame,
     QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
+    QPushButton,
+    QColorDialog,
+    QLineEdit,
+)
+
+from airt.core.color_mapping import (
+    BandColorMapping,
+    build_color_mapping,
+    is_valid_hex_color,
+    mapping_to_project_dict,
 )
 
 
@@ -22,10 +35,34 @@ PRESETS = {
 }
 
 
+COLOR_MAPPING_MODES = {
+    "photometric": "Photometric",
+    "chromatic_order": "Chromatic Order",
+    "sho": "SHO",
+    "hoo": "HOO",
+    "custom": "Custom",
+}
+
+
+CHANNELS = [
+    "-",
+    "R",
+    "G",
+    "B",
+    "R+G",
+    "R+B",
+    "G+B",
+    "R+G+B",
+    "L",
+]
+
+
 class PresetStep(QWidget):
     def __init__(self, wizard):
         super().__init__()
         self.wizard = wizard
+        self.current_mapping: list[BandColorMapping] = []
+        self._loading = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -42,11 +79,12 @@ class PresetStep(QWidget):
         root.setContentsMargins(48, 42, 48, 42)
         root.setSpacing(22)
 
-        title = QLabel("Object preset and band mapping")
+        title = QLabel("Object preset and color mapping")
         title.setObjectName("pageTitle")
 
         subtitle = QLabel(
-            "Choose the processing strategy and define how detected bands should be mapped to RGB output channels."
+            "Choose the processing strategy and define how detected bands will be represented in preview and RGB composition. "
+            "Color mapping is visualization metadata and does not alter the original scientific data."
         )
         subtitle.setObjectName("pageSubtitle")
         subtitle.setWordWrap(True)
@@ -54,18 +92,18 @@ class PresetStep(QWidget):
         root.addWidget(title)
         root.addWidget(subtitle)
 
-        preset_card = QFrame()
-        preset_card.setObjectName("contentCard")
-        preset_layout = QGridLayout(preset_card)
-        preset_layout.setContentsMargins(28, 24, 28, 28)
-        preset_layout.setHorizontalSpacing(16)
-        preset_layout.setVerticalSpacing(16)
-        preset_layout.setColumnMinimumWidth(0, 160)
-        preset_layout.setColumnStretch(1, 1)
+        settings_card = QFrame()
+        settings_card.setObjectName("contentCard")
+        settings_layout = QGridLayout(settings_card)
+        settings_layout.setContentsMargins(28, 24, 28, 28)
+        settings_layout.setHorizontalSpacing(16)
+        settings_layout.setVerticalSpacing(16)
+        settings_layout.setColumnMinimumWidth(0, 180)
+        settings_layout.setColumnStretch(1, 1)
 
-        section = QLabel("Processing preset")
+        section = QLabel("Processing and visualization")
         section.setObjectName("sectionTitle")
-        preset_layout.addWidget(section, 0, 0, 1, 2)
+        settings_layout.addWidget(section, 0, 0, 1, 2)
 
         preset_label = QLabel("Object type")
         preset_label.setObjectName("fieldLabel")
@@ -74,38 +112,48 @@ class PresetStep(QWidget):
         for key, label in PRESETS.items():
             self.preset_combo.addItem(label, key)
 
-        preset_layout.addWidget(preset_label, 1, 0)
-        preset_layout.addWidget(self.preset_combo, 1, 1)
+        color_mode_label = QLabel("Color Mapping")
+        color_mode_label.setObjectName("fieldLabel")
+
+        self.color_mapping_combo = QComboBox()
+        for key, label in COLOR_MAPPING_MODES.items():
+            self.color_mapping_combo.addItem(label, key)
 
         self.preset_description = QLabel("")
         self.preset_description.setObjectName("mutedText")
         self.preset_description.setWordWrap(True)
-        preset_layout.addWidget(self.preset_description, 2, 0, 1, 2)
 
-        root.addWidget(preset_card)
+        settings_layout.addWidget(preset_label, 1, 0)
+        settings_layout.addWidget(self.preset_combo, 1, 1)
+        settings_layout.addWidget(color_mode_label, 2, 0)
+        settings_layout.addWidget(self.color_mapping_combo, 2, 1)
+        settings_layout.addWidget(self.preset_description, 3, 0, 1, 2)
+
+        root.addWidget(settings_card)
 
         mapping_card = QFrame()
         mapping_card.setObjectName("contentCard")
-        mapping_layout = QGridLayout(mapping_card)
+        mapping_layout = QVBoxLayout(mapping_card)
         mapping_layout.setContentsMargins(28, 24, 28, 28)
-        mapping_layout.setHorizontalSpacing(16)
-        mapping_layout.setVerticalSpacing(16)
-        mapping_layout.setColumnMinimumWidth(0, 160)
-        mapping_layout.setColumnStretch(1, 1)
+        mapping_layout.setSpacing(12)
 
-        mapping_title = QLabel("Band to color mapping")
+        mapping_title = QLabel("Detected band mapping")
         mapping_title.setObjectName("sectionTitle")
-        mapping_layout.addWidget(mapping_title, 0, 0, 1, 2)
 
-        self.red_combo = self._make_band_combo()
-        self.green_combo = self._make_band_combo()
-        self.blue_combo = self._make_band_combo()
-        self.luminance_combo = self._make_band_combo(include_none=True)
+        self.mapping_table = QTableWidget(0, 5)
+        self.mapping_table.setHorizontalHeaderLabels([
+            "Detected band",
+            "Normalized band",
+            "Color",
+            "Hex",
+            "Channel",
+        ])
+        self.mapping_table.verticalHeader().setVisible(False)
+        self.mapping_table.setMinimumHeight(360)
+        self.mapping_table.horizontalHeader().setStretchLastSection(True)
 
-        self._add_mapping_row(mapping_layout, 1, "Red channel", self.red_combo)
-        self._add_mapping_row(mapping_layout, 2, "Green channel", self.green_combo)
-        self._add_mapping_row(mapping_layout, 3, "Blue channel", self.blue_combo)
-        self._add_mapping_row(mapping_layout, 4, "Luminance", self.luminance_combo)
+        mapping_layout.addWidget(mapping_title)
+        mapping_layout.addWidget(self.mapping_table)
 
         root.addWidget(mapping_card)
 
@@ -114,39 +162,28 @@ class PresetStep(QWidget):
         info_layout = QVBoxLayout(info)
         info_layout.setContentsMargins(20, 14, 20, 14)
 
-        info_text = QLabel(
-            "All detected bands are preserved. RGB mapping only defines how the final color image will be composed."
+        self.info_text = QLabel(
+            "Preset mappings can be changed at any time. Custom keeps its saved configuration when switching to another preset."
         )
-        info_text.setObjectName("infoText")
-        info_text.setWordWrap(True)
+        self.info_text.setObjectName("infoText")
+        self.info_text.setWordWrap(True)
 
-        info_layout.addWidget(info_text)
+        info_layout.addWidget(self.info_text)
         root.addWidget(info)
         root.addStretch(1)
 
         outer.addWidget(scroll)
 
         self.preset_combo.currentIndexChanged.connect(self.update_preset_description)
-
-    def _make_band_combo(self, include_none: bool = False) -> QComboBox:
-        combo = QComboBox()
-        if include_none:
-            combo.addItem("None", "")
-        return combo
-
-    def _add_mapping_row(self, layout: QGridLayout, row: int, label_text: str, combo: QComboBox):
-        label = QLabel(label_text)
-        label.setObjectName("fieldLabel")
-        layout.addWidget(label, row, 0)
-        layout.addWidget(combo, row, 1)
+        self.color_mapping_combo.currentIndexChanged.connect(self.on_color_mapping_mode_changed)
 
     def on_enter(self):
         self.wizard.footer.back_button.setEnabled(True)
         self.wizard.footer.next_button.setEnabled(True)
-        self.wizard.footer.set_status("Choose preset and band mapping.")
+        self.wizard.footer.set_status("Choose object preset and color mapping.")
 
-        self.load_bands()
         self.load_from_project()
+        self.rebuild_mapping_table()
         self.update_preset_description()
 
     def detected_bands(self) -> list[str]:
@@ -162,85 +199,260 @@ class PresetStep(QWidget):
             }
         )
 
-    def load_bands(self):
-        bands = self.detected_bands()
-
-        for combo in [self.red_combo, self.green_combo, self.blue_combo]:
-            combo.clear()
-            for band in bands:
-                combo.addItem(band, band)
-
-        self.luminance_combo.clear()
-        self.luminance_combo.addItem("None", "")
-        for band in bands:
-            self.luminance_combo.addItem(band, band)
-
-        self.apply_default_mapping(bands)
-
-    def set_combo_value(self, combo: QComboBox, value: str):
-        index = combo.findData(value)
-        if index >= 0:
-            combo.setCurrentIndex(index)
-
-    def apply_default_mapping(self, bands: list[str]):
-        upper = {band.upper(): band for band in bands}
-
-        self.set_combo_value(self.red_combo, upper.get("R", bands[0] if bands else ""))
-        self.set_combo_value(self.green_combo, upper.get("V", upper.get("G", bands[1] if len(bands) > 1 else (bands[0] if bands else ""))))
-        self.set_combo_value(self.blue_combo, upper.get("B", bands[2] if len(bands) > 2 else (bands[-1] if bands else "")))
-
-        if "L" in upper:
-            self.set_combo_value(self.luminance_combo, upper["L"])
-
     def load_from_project(self):
         project = self.wizard.project
         if not project:
             return
+
+        self._loading = True
 
         preset = getattr(project, "preset", "auto") or "auto"
         index = self.preset_combo.findData(preset)
         if index >= 0:
             self.preset_combo.setCurrentIndex(index)
 
-        mapping = project.output_options.get("band_mapping", {}) if project.output_options else {}
+        mode = project.output_options.get("color_mapping_mode", "photometric")
+        mode_index = self.color_mapping_combo.findData(mode)
+        if mode_index >= 0:
+            self.color_mapping_combo.setCurrentIndex(mode_index)
 
-        if mapping:
-            self.set_combo_value(self.red_combo, mapping.get("red", ""))
-            self.set_combo_value(self.green_combo, mapping.get("green", ""))
-            self.set_combo_value(self.blue_combo, mapping.get("blue", ""))
-            self.set_combo_value(self.luminance_combo, mapping.get("luminance", ""))
+        self._loading = False
 
     def update_preset_description(self):
         key = self.preset_combo.currentData()
 
         descriptions = {
             "auto": "The application will suggest a strategy based on detected bands and object structure.",
-            "compact_galaxy": "Best for targets like M104: compact central object and strong surrounding background.",
-            "extended_galaxy": "Best for targets like M83, M101 or M33: large diffuse arms that need stronger protection.",
-            "nebula": "Conservative background correction to preserve diffuse nebulosity.",
-            "star_field": "For clusters and star fields where the background can be modeled more aggressively.",
+            "compact_galaxy": "Best for compact targets with strong central structure and surrounding background.",
+            "extended_galaxy": "Best for large diffuse galaxies where object protection is important.",
+            "nebula": "Conservative background correction to preserve diffuse emission.",
+            "star_field": "For clusters and star fields where background can be modeled more aggressively.",
             "manual_advanced": "Expose advanced parameters in later steps.",
         }
 
         self.preset_description.setText(descriptions.get(key, ""))
 
+    def on_color_mapping_mode_changed(self):
+        if self._loading:
+            return
+
+        self.save_custom_mapping_from_table()
+        self.rebuild_mapping_table()
+
+    def saved_custom_mapping(self) -> dict[str, dict[str, str]]:
+        project = self.wizard.project
+        if not project:
+            return {}
+
+        return project.output_options.get("custom_color_mapping", {}) or {}
+
+    def rebuild_mapping_table(self):
+        bands = self.detected_bands()
+        mode = self.color_mapping_combo.currentData() or "photometric"
+
+        self.current_mapping = build_color_mapping(
+            bands=bands,
+            mode=mode,
+            saved_custom=self.saved_custom_mapping(),
+        )
+
+        self.populate_mapping_table()
+
+    def populate_mapping_table(self):
+        mode = self.color_mapping_combo.currentData() or "photometric"
+        custom = mode == "custom"
+
+        self.mapping_table.blockSignals(True)
+        self.mapping_table.setRowCount(len(self.current_mapping))
+
+        for row, item in enumerate(self.current_mapping):
+            band_item = QTableWidgetItem(item.band)
+            band_item.setTextAlignment(Qt.AlignCenter)
+            band_item.setFlags(band_item.flags() & ~Qt.ItemIsEditable)
+
+            normalized_item = QTableWidgetItem(item.normalized_band)
+            normalized_item.setTextAlignment(Qt.AlignCenter)
+            normalized_item.setFlags(normalized_item.flags() & ~Qt.ItemIsEditable)
+
+            self.mapping_table.setItem(row, 0, band_item)
+            self.mapping_table.setItem(row, 1, normalized_item)
+
+            color_button = QPushButton(item.color_name)
+            color_button.setStyleSheet(
+                f"background-color: {item.hex_color}; color: {self.text_color_for_background(item.hex_color)};"
+            )
+            color_button.setEnabled(custom)
+            color_button.clicked.connect(lambda checked=False, r=row: self.choose_color(r))
+            self.mapping_table.setCellWidget(row, 2, color_button)
+
+            hex_edit = QLineEdit(item.hex_color)
+            hex_edit.setEnabled(custom)
+            hex_edit.editingFinished.connect(lambda r=row: self.on_hex_changed(r))
+            self.mapping_table.setCellWidget(row, 3, hex_edit)
+
+            channel_combo = QComboBox()
+            for channel in CHANNELS:
+                channel_combo.addItem(channel, channel)
+
+            index = channel_combo.findData(item.channel)
+            if index >= 0:
+                channel_combo.setCurrentIndex(index)
+
+            channel_combo.setEnabled(custom)
+            channel_combo.currentIndexChanged.connect(lambda ignored=0, r=row: self.on_channel_changed(r))
+            self.mapping_table.setCellWidget(row, 4, channel_combo)
+
+            self.mapping_table.setRowHeight(row, 42)
+
+        self.mapping_table.blockSignals(False)
+        self.mapping_table.resizeColumnsToContents()
+
+        if not self.current_mapping:
+            self.info_text.setText("No object bands were detected. Go back to Files and verify the scan result.")
+        elif custom:
+            self.info_text.setText("Custom mode uses a Smart Default as a starting point. You can edit each color and channel.")
+        else:
+            self.info_text.setText("Preset mode is read-only. Switch to Custom to manually edit colors and channels.")
+
+    def text_color_for_background(self, hex_color: str) -> str:
+        value = hex_color.strip().lstrip("#")
+
+        try:
+            r = int(value[0:2], 16)
+            g = int(value[2:4], 16)
+            b = int(value[4:6], 16)
+        except Exception:
+            return "#FFFFFF"
+
+        luminance = (0.299 * r + 0.587 * g + 0.114 * b)
+        return "#000000" if luminance > 150 else "#FFFFFF"
+
+    def choose_color(self, row: int):
+        if row < 0 or row >= len(self.current_mapping):
+            return
+
+        current = QColor(self.current_mapping[row].hex_color)
+        selected = QColorDialog.getColor(current, self, "Choose band color")
+
+        if not selected.isValid():
+            return
+
+        hex_color = selected.name().upper()
+
+        item = self.current_mapping[row]
+        self.current_mapping[row] = BandColorMapping(
+            band=item.band,
+            normalized_band=item.normalized_band,
+            color_name="Custom",
+            hex_color=hex_color,
+            channel=item.channel,
+        )
+
+        self.populate_mapping_table()
+        self.save_custom_mapping_to_project()
+
+    def on_hex_changed(self, row: int):
+        if row < 0 or row >= len(self.current_mapping):
+            return
+
+        widget = self.mapping_table.cellWidget(row, 3)
+        if not isinstance(widget, QLineEdit):
+            return
+
+        value = widget.text().strip().upper()
+
+        if not is_valid_hex_color(value):
+            widget.setText(self.current_mapping[row].hex_color)
+            return
+
+        item = self.current_mapping[row]
+        self.current_mapping[row] = BandColorMapping(
+            band=item.band,
+            normalized_band=item.normalized_band,
+            color_name="Custom",
+            hex_color=value,
+            channel=item.channel,
+        )
+
+        self.populate_mapping_table()
+        self.save_custom_mapping_to_project()
+
+    def on_channel_changed(self, row: int):
+        if row < 0 or row >= len(self.current_mapping):
+            return
+
+        widget = self.mapping_table.cellWidget(row, 4)
+        if not isinstance(widget, QComboBox):
+            return
+
+        item = self.current_mapping[row]
+        self.current_mapping[row] = BandColorMapping(
+            band=item.band,
+            normalized_band=item.normalized_band,
+            color_name=item.color_name,
+            hex_color=item.hex_color,
+            channel=widget.currentData() or "-",
+        )
+
+        self.save_custom_mapping_to_project()
+
+    def save_custom_mapping_from_table(self):
+        if self.color_mapping_combo.currentData() != "custom":
+            return
+
+        self.save_custom_mapping_to_project()
+
+    def save_custom_mapping_to_project(self):
+        project = self.wizard.ensure_project()
+        project.output_options["custom_color_mapping"] = mapping_to_project_dict(self.current_mapping)
+        project.update_timestamp()
+
     def save_to_project(self):
         project = self.wizard.ensure_project()
-        project.preset = self.preset_combo.currentData() or "auto"
 
-        project.output_options.setdefault("band_mapping", {})
-        project.output_options["band_mapping"] = {
-            "red": self.red_combo.currentData() or "",
-            "green": self.green_combo.currentData() or "",
-            "blue": self.blue_combo.currentData() or "",
-            "luminance": self.luminance_combo.currentData() or "",
+        self.save_custom_mapping_from_table()
+
+        mode = self.color_mapping_combo.currentData() or "photometric"
+
+        project.preset = self.preset_combo.currentData() or "auto"
+        project.output_options["color_mapping_mode"] = mode
+        project.output_options["color_mapping"] = mapping_to_project_dict(self.current_mapping)
+
+        # Backward-compatible simple RGB/L mapping used by future pipeline steps.
+        rgb_mapping = {
+            "red": "",
+            "green": "",
+            "blue": "",
+            "luminance": "",
         }
 
+        for item in self.current_mapping:
+            if item.channel == "R" and not rgb_mapping["red"]:
+                rgb_mapping["red"] = item.band
+            elif item.channel == "G" and not rgb_mapping["green"]:
+                rgb_mapping["green"] = item.band
+            elif item.channel == "B" and not rgb_mapping["blue"]:
+                rgb_mapping["blue"] = item.band
+            elif item.channel == "L" and not rgb_mapping["luminance"]:
+                rgb_mapping["luminance"] = item.band
+            elif item.channel == "G+B":
+                if not rgb_mapping["green"]:
+                    rgb_mapping["green"] = item.band
+                if not rgb_mapping["blue"]:
+                    rgb_mapping["blue"] = item.band
+            elif item.channel == "R+G+B":
+                if not rgb_mapping["red"]:
+                    rgb_mapping["red"] = item.band
+                if not rgb_mapping["green"]:
+                    rgb_mapping["green"] = item.band
+                if not rgb_mapping["blue"]:
+                    rgb_mapping["blue"] = item.band
+
+        project.output_options["band_mapping"] = rgb_mapping
         project.update_timestamp()
 
     def on_next(self) -> bool:
         self.save_to_project()
-        self.wizard.footer.set_status("Preset and band mapping saved.")
+        self.wizard.footer.set_status("Object preset and color mapping saved.")
         self.wizard.go_to_step(5)
         return False
-
