@@ -7,7 +7,15 @@ from contextlib import suppress
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QProgressBar, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QLabel,
+    QProgressBar,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from airt.core.final_render import build_final_image, output_folder_for_project, save_final_outputs
 from airt.project import autosave_project
@@ -26,25 +34,28 @@ class ProcessingStep(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.NoFrame)
-        self.scroll.setObjectName("pageScroll")
+        self.scroll.setObjectName("processingScroll")
 
         content = QWidget()
+        content.setObjectName("processingBackdrop")
         self.scroll.setWidget(content)
 
         root = QVBoxLayout(content)
         root.setContentsMargins(48, 42, 48, 42)
-        root.setSpacing(22)
+        root.setSpacing(0)
 
         self.progress_card = QFrame()
         self.progress_card.setObjectName("processingCard")
+        self.progress_card.setMinimumHeight(220)
 
-        progress_layout = QVBoxLayout(self.progress_card)
-        progress_layout.setContentsMargins(34, 28, 34, 30)
-        progress_layout.setSpacing(18)
+        card_layout = QVBoxLayout(self.progress_card)
+        card_layout.setContentsMargins(34, 28, 34, 30)
+        card_layout.setSpacing(18)
 
         title = QLabel("Process & Save")
         title.setObjectName("pageTitle")
@@ -57,9 +68,9 @@ class ProcessingStep(QWidget):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
 
-        progress_layout.addWidget(title)
-        progress_layout.addWidget(self.status_label)
-        progress_layout.addWidget(self.progress_bar)
+        card_layout.addWidget(title)
+        card_layout.addWidget(self.status_label)
+        card_layout.addWidget(self.progress_bar)
 
         root.addStretch(1)
         root.addWidget(self.progress_card)
@@ -72,8 +83,8 @@ class ProcessingStep(QWidget):
         self.generated_files = []
         self.progress_bar.setValue(0)
         self.status_label.setText("Processing will start automatically.")
-        self.progress_card.setProperty("processing", True)
-        self.refresh_processing_style()
+
+        self.set_processing_visual(True)
 
         self.wizard.footer.back_button.setEnabled(False)
 
@@ -87,18 +98,26 @@ class ProcessingStep(QWidget):
         QTimer.singleShot(250, self.start_processing)
 
     def on_leave(self, target_index: int):
+        self.set_processing_visual(False)
+
         if hasattr(self.wizard.footer, "cancel_button"):
             self.wizard.footer.cancel_button.setVisible(True)
 
         self.wizard.footer.next_button.setText("Next")
 
-    def refresh_processing_style(self):
-        for widget in [self.progress_card]:
+    def set_processing_visual(self, processing: bool):
+        self.setProperty("processing", processing)
+        self.progress_card.setProperty("processing", processing)
+
+        for widget in [self, self.scroll, self.progress_card]:
             widget.style().unpolish(widget)
             widget.style().polish(widget)
 
+    def clean_message(self, message: str) -> str:
+        return " ".join(str(message).splitlines()).strip()
+
     def report_progress(self, value: int, message: str):
-        clean_message = " ".join(str(message).splitlines())
+        clean_message = self.clean_message(message)
         self.progress_bar.setValue(int(value))
         self.status_label.setText(clean_message)
         QApplication.processEvents()
@@ -138,8 +157,7 @@ class ProcessingStep(QWidget):
             self.report_progress(100, "Done. Final files generated.")
 
             self.finished = True
-            self.progress_card.setProperty("processing", False)
-            self.refresh_processing_style()
+            self.set_processing_visual(False)
 
             self.wizard.footer.next_button.setEnabled(True)
             self.wizard.footer.back_button.setEnabled(True)
@@ -157,12 +175,11 @@ class ProcessingStep(QWidget):
             self.processing = False
 
     def fail_processing(self, message: str):
-        clean_message = " ".join(str(message).splitlines())
+        clean_message = self.clean_message(message)
         self.progress_bar.setValue(0)
         self.status_label.setText(f"Processing failed: {clean_message}")
         self.finished = False
-        self.progress_card.setProperty("processing", False)
-        self.refresh_processing_style()
+        self.set_processing_visual(False)
 
         self.wizard.footer.back_button.setEnabled(True)
         self.wizard.footer.next_button.setEnabled(False)
