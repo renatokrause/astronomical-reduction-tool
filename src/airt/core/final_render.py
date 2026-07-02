@@ -384,6 +384,8 @@ def estimate_background(image: np.ndarray, block_size: int = 128, protection: st
         percentile = 90.0
     elif protection == "high":
         percentile = 70.0
+    elif protection == "very_high":
+        percentile = 60.0
     else:
         percentile = 80.0
 
@@ -751,17 +753,39 @@ def stretch_rgb_preserve_color(
     return np.clip(out, 0, 1).astype(np.float32, copy=False)
 
 
+def correct_rgb_background_linear(rgb: np.ndarray, settings: dict) -> np.ndarray:
+    if not settings or not settings.get("enabled", False):
+        return rgb.astype(np.float32, copy=False)
+
+    corrected = np.zeros_like(rgb, dtype=np.float32)
+
+    for index in range(3):
+        corrected[:, :, index] = correct_background_linear(rgb[:, :, index], settings)
+
+    return corrected.astype(np.float32, copy=False)
+
+
 def compose_final_rgb(project, masters: dict[str, np.ndarray], rendering: str, stretch: str) -> np.ndarray:
     background_settings = project.output_options.get("background_correction", {}) if project else {}
+    apply_to = background_settings.get("apply_to", "per_band")
     color_mapping = project.output_options.get("color_mapping", {}) if project else {}
 
     corrected: dict[str, np.ndarray] = {}
 
     for band, master in masters.items():
-        corrected[band] = correct_background_linear(master, background_settings)
+        if apply_to == "per_band":
+            corrected[band] = correct_background_linear(master, background_settings)
+        else:
+            # "combined" is applied after channel composition.
+            # "preview_only" does not affect final rendering.
+            corrected[band] = master.astype(np.float32, copy=False)
 
     if rendering != "color":
         gray_linear = robust_median_stack(list(corrected.values()))
+
+        if apply_to == "combined":
+            gray_linear = correct_background_linear(gray_linear, background_settings)
+
         gray = final_stretch_channel(gray_linear, stretch)
         return np.dstack([gray, gray, gray]).astype(np.float32, copy=False)
 
@@ -787,12 +811,19 @@ def compose_final_rgb(project, masters: dict[str, np.ndarray], rendering: str, s
 
     if np.all(weights_sum == 0):
         gray_linear = luminance if luminance is not None else robust_median_stack(list(corrected.values()))
+
+        if apply_to == "combined":
+            gray_linear = correct_background_linear(gray_linear, background_settings)
+
         gray = final_stretch_channel(gray_linear, stretch)
         return np.dstack([gray, gray, gray]).astype(np.float32, copy=False)
 
     for index in range(3):
         if weights_sum[index] > 0:
             linear_rgb[:, :, index] /= weights_sum[index]
+
+    if apply_to == "combined":
+        linear_rgb = correct_rgb_background_linear(linear_rgb, background_settings)
 
     linear_rgb = neutralize_linear_rgb_background(linear_rgb)
     rgb = stretch_rgb_preserve_color(linear_rgb, stretch, luminance)

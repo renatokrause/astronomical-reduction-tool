@@ -7,21 +7,9 @@ from contextlib import suppress
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (
-    QApplication,
-    QFrame,
-    QLabel,
-    QProgressBar,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QProgressBar, QScrollArea, QVBoxLayout, QWidget
 
-from airt.core.final_render import (
-    build_final_image,
-    output_folder_for_project,
-    save_final_outputs,
-)
+from airt.core.final_render import build_final_image, output_folder_for_project, save_final_outputs
 from airt.project import autosave_project
 
 
@@ -34,65 +22,58 @@ class ProcessingStep(QWidget):
         self.processing = False
         self.finished = False
 
+        self.setObjectName("processingPage")
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setObjectName("pageScroll")
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setObjectName("pageScroll")
 
         content = QWidget()
-        scroll.setWidget(content)
+        self.scroll.setWidget(content)
 
         root = QVBoxLayout(content)
         root.setContentsMargins(48, 42, 48, 42)
         root.setSpacing(22)
 
+        self.progress_card = QFrame()
+        self.progress_card.setObjectName("processingCard")
+
+        progress_layout = QVBoxLayout(self.progress_card)
+        progress_layout.setContentsMargins(34, 28, 34, 30)
+        progress_layout.setSpacing(18)
+
         title = QLabel("Process & Save")
         title.setObjectName("pageTitle")
 
-        subtitle = QLabel(
-            "Generate the final image files automatically using the selected frames and saved project settings."
-        )
-        subtitle.setObjectName("pageSubtitle")
-        subtitle.setWordWrap(True)
-
-        root.addWidget(title)
-        root.addWidget(subtitle)
-
-        progress_card = QFrame()
-        progress_card.setObjectName("contentCard")
-
-        progress_layout = QVBoxLayout(progress_card)
-        progress_layout.setContentsMargins(24, 20, 24, 24)
-        progress_layout.setSpacing(14)
-
-        section_title = QLabel("Process & Save")
-        section_title.setObjectName("sectionTitle")
-
         self.status_label = QLabel("Processing will start automatically.")
-        self.status_label.setObjectName("mutedText")
+        self.status_label.setObjectName("pageSubtitle")
         self.status_label.setWordWrap(True)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
 
-        progress_layout.addWidget(section_title)
+        progress_layout.addWidget(title)
         progress_layout.addWidget(self.status_label)
         progress_layout.addWidget(self.progress_bar)
 
-        root.addWidget(progress_card)
         root.addStretch(1)
+        root.addWidget(self.progress_card)
+        root.addStretch(2)
 
-        outer.addWidget(scroll)
+        outer.addWidget(self.scroll)
 
     def on_enter(self):
         self.finished = False
         self.generated_files = []
         self.progress_bar.setValue(0)
         self.status_label.setText("Processing will start automatically.")
+        self.progress_card.setProperty("processing", True)
+        self.refresh_processing_style()
 
         self.wizard.footer.back_button.setEnabled(False)
 
@@ -111,9 +92,15 @@ class ProcessingStep(QWidget):
 
         self.wizard.footer.next_button.setText("Next")
 
+    def refresh_processing_style(self):
+        for widget in [self.progress_card]:
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
     def report_progress(self, value: int, message: str):
+        clean_message = " ".join(str(message).splitlines())
         self.progress_bar.setValue(int(value))
-        self.status_label.setText(message)
+        self.status_label.setText(clean_message)
         QApplication.processEvents()
 
     def start_processing(self):
@@ -148,10 +135,12 @@ class ProcessingStep(QWidget):
             self.report_progress(85, "Saving selected output formats.")
             self.generated_files = save_final_outputs(project, result, export)
 
-            generated_text = "\\n".join(str(path) for path in self.generated_files)
-            self.report_progress(100, f"Done. Final files generated:\\n{generated_text}")
+            self.report_progress(100, "Done. Final files generated.")
 
             self.finished = True
+            self.progress_card.setProperty("processing", False)
+            self.refresh_processing_style()
+
             self.wizard.footer.next_button.setEnabled(True)
             self.wizard.footer.back_button.setEnabled(True)
             self.wizard.footer.set_status("Processing finished. Click Finish to close.")
@@ -168,13 +157,16 @@ class ProcessingStep(QWidget):
             self.processing = False
 
     def fail_processing(self, message: str):
+        clean_message = " ".join(str(message).splitlines())
         self.progress_bar.setValue(0)
-        self.status_label.setText(f"Processing failed: {message}")
+        self.status_label.setText(f"Processing failed: {clean_message}")
         self.finished = False
+        self.progress_card.setProperty("processing", False)
+        self.refresh_processing_style()
 
         self.wizard.footer.back_button.setEnabled(True)
         self.wizard.footer.next_button.setEnabled(False)
-        self.wizard.footer.set_status(f"Processing failed: {message}")
+        self.wizard.footer.set_status(f"Processing failed: {clean_message}")
 
     def open_output_folder(self):
         project = self.wizard.project
@@ -185,15 +177,13 @@ class ProcessingStep(QWidget):
         folder = output_folder_for_project(project)
         folder.mkdir(parents=True, exist_ok=True)
 
-        try:
+        with suppress(Exception):
             if sys.platform.startswith("win"):
                 os.startfile(str(folder))
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", str(folder)])
             else:
                 subprocess.Popen(["xdg-open", str(folder)])
-        except Exception:
-            pass
 
     def on_next(self) -> bool:
         if not self.finished:

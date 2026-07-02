@@ -105,6 +105,7 @@ class BackgroundStep(QWidget):
 
         self.apply_to_combo = QComboBox()
         self.apply_to_combo.addItem("Per band", "per_band")
+        self.apply_to_combo.addItem("Combined", "combined")
         self.apply_to_combo.addItem("Preview only", "preview_only")
         self.apply_to_combo.currentIndexChanged.connect(self.on_settings_changed)
 
@@ -112,6 +113,7 @@ class BackgroundStep(QWidget):
         self.protection_combo.addItem("Low", "low")
         self.protection_combo.addItem("Medium", "medium")
         self.protection_combo.addItem("High", "high")
+        self.protection_combo.addItem("Very High", "very_high")
         self.protection_combo.currentIndexChanged.connect(self.on_settings_changed)
 
         self.view_combo = QComboBox()
@@ -121,7 +123,7 @@ class BackgroundStep(QWidget):
         self.view_combo.currentIndexChanged.connect(self.update_preview)
 
         self.strength_spin = QDoubleSpinBox()
-        self.strength_spin.setRange(0.0, 1.0)
+        self.strength_spin.setRange(0.0, 2.0)
         self.strength_spin.setDecimals(2)
         self.strength_spin.setSingleStep(0.05)
         self.strength_spin.valueChanged.connect(self.on_settings_changed)
@@ -530,6 +532,9 @@ class BackgroundStep(QWidget):
 
         if protection == "high":
             return 70.0
+
+        if protection == "very_high":
+            return 60.0
 
         return 80.0
 

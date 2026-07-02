@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from airt.core.bands import sort_bands_recommended
 from airt.core.color_mapping import (
     BandColorMapping,
     build_color_mapping,
@@ -189,11 +190,23 @@ class PresetStep(QWidget):
         self.update_preset_description()
 
     def detected_bands(self) -> list[str]:
+        project = self.wizard.project
+
+        if project:
+            selected = getattr(project, "selected_object_files", {}) or {}
+            selected_bands = [band for band, paths in selected.items() if band and band != "-" and paths]
+
+            if selected_bands:
+                return sort_bands_recommended(selected_bands)
+
         result = getattr(self.wizard, "scan_result", None)
+
         if not result:
             return []
 
-        return sorted({item.band for item in result.files if item.kind == "object" and item.band != "-"})
+        return sort_bands_recommended(
+            {item.band for item in result.files if item.kind == "object" and item.band != "-"}
+        )
 
     def load_from_project(self):
         project = self.wizard.project
