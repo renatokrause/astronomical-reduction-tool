@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import subprocess
@@ -103,6 +103,7 @@ class ProcessingStep(QWidget):
         summary_layout.addWidget(QLabel("Bands"), 5, 0)
         summary_layout.addWidget(self.bands_label, 5, 1)
 
+        summary_card.setVisible(False)
         root.addWidget(summary_card)
 
         progress_card = QFrame()

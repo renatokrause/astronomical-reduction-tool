@@ -1,6 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -230,6 +231,7 @@ class FinalCompositionStep(QWidget):
         preview_layout.addWidget(self.preview_info)
         preview_layout.addWidget(self.preview_view, 1)
 
+        preview_card.setVisible(False)
         root.addWidget(preview_card, 1)
 
         outer.addWidget(scroll)
@@ -240,7 +242,6 @@ class FinalCompositionStep(QWidget):
         self.wizard.footer.set_status("Configure final composition and export.")
 
         self.load_settings_from_project()
-        self.recompute_preview()
 
     def on_leave(self, target_index: int):
         self.persist_settings()
@@ -257,7 +258,7 @@ class FinalCompositionStep(QWidget):
 
         self._loading_controls = True
 
-        self.set_combo_by_data(self.rendering_combo, composition.get("rendering", "grayscale"))
+        self.set_combo_by_data(self.rendering_combo, composition.get("rendering", "color"))
         self.set_combo_by_data(self.stretch_combo, composition.get("stretch", "auto"))
 
         self.saturation_spin.setValue(float(composition.get("saturation", 1.0)))
@@ -304,13 +305,12 @@ class FinalCompositionStep(QWidget):
             return
 
         self.save_to_project()
-        self.recompute_preview()
         self.persist_settings()
 
     def reset_settings(self):
         self._loading_controls = True
 
-        self.set_combo_by_data(self.rendering_combo, "grayscale")
+        self.set_combo_by_data(self.rendering_combo, "color")
         self.set_combo_by_data(self.stretch_combo, "auto")
         self.saturation_spin.setValue(1.0)
         self.brightness_spin.setValue(0.0)
@@ -325,7 +325,6 @@ class FinalCompositionStep(QWidget):
         self._loading_controls = False
 
         self.save_to_project()
-        self.recompute_preview()
         self.persist_settings()
 
     def recompute_preview(self):
