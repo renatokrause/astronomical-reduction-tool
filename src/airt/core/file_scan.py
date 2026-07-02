@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 from typing import Iterable
 
+from airt.core.bands import normalize_band_name, sort_bands_recommended, recommended_band_sort_key
+
 
 FITS_EXTENSIONS = (".fit", ".fits", ".fts", ".fit.gz", ".fits.gz", ".fts.gz")
 
@@ -62,31 +64,8 @@ def normalize_band(value: object, fallback: str = "-") -> str:
     if not text:
         return fallback
 
-    cleaned = text.upper()
-    cleaned = cleaned.replace("FILTER_", "")
-    cleaned = cleaned.replace("FILT_", "")
-    cleaned = cleaned.replace("BAND_", "")
-    cleaned = cleaned.replace("'", "")
-    cleaned = cleaned.replace('"', "")
-    cleaned = cleaned.strip()
-
-    aliases = {
-        "RED": "R",
-        "GREEN": "V",
-        "BLUE": "B",
-        "LUMINANCE": "L",
-        "LUM": "L",
-        "CLEAR": "L",
-        "HA": "HA",
-        "H-ALPHA": "HA",
-        "HALPHA": "HA",
-        "OIII": "OIII",
-        "O-III": "OIII",
-        "SII": "SII",
-        "S-II": "SII",
-    }
-
-    return aliases.get(cleaned, cleaned)
+    normalized = normalize_band_name(text)
+    return fallback if normalized == "UNKNOWN" else normalized
 
 
 def infer_band_from_filename(path: Path) -> str:
@@ -214,7 +193,12 @@ def summarize(files: list[FitsFileInfo]) -> list[ScanSummaryRow]:
 
     rows: list[ScanSummaryRow] = []
 
-    for (kind, band), group in sorted(groups.items()):
+    kind_order = {"object": 0, "bias": 1, "dark": 2, "flat": 3, "focus": 4}
+
+    for (kind, band), group in sorted(
+        groups.items(),
+        key=lambda item: (kind_order.get(item[0][0], 99), recommended_band_sort_key(item[0][1])),
+    ):
         problems = sorted({item.problem for item in group if item.problem})
         status = "OK" if not problems else "Warning"
 
@@ -315,8 +299,8 @@ def scan_project_files(project, progress_callback=None) -> ScanResult:
         elif not Path(folder).exists():
             problems.append(f"{kind}: folder does not exist: {folder}")
 
-    light_bands = sorted({item.band for item in files if item.kind == "object" and item.band != "-"})
-    flat_bands = sorted({item.band for item in files if item.kind == "flat" and item.band != "-"})
+    light_bands = sort_bands_recommended({item.band for item in files if item.kind == "object" and item.band != "-"})
+    flat_bands = sort_bands_recommended({item.band for item in files if item.kind == "flat" and item.band != "-"})
 
     for band in light_bands:
         if band not in flat_bands:
@@ -340,4 +324,6 @@ def scan_project_files(project, progress_callback=None) -> ScanResult:
     problems.extend(file_problems)
 
     return ScanResult(files=files, summary=summary, problems=problems)
+
+
 

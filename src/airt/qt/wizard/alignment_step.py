@@ -20,12 +20,12 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QGraphicsScene,
     QGraphicsPixmapItem,
-    QSplitter,
     QTableWidget,
     QTableWidgetItem,
 )
 
 from airt.project import autosave_project
+from airt.core.bands import band_display_label, sort_bands_recommended, normalize_band_name
 
 
 class AlignmentPreviewView(QGraphicsView):
@@ -47,7 +47,6 @@ class AlignmentPreviewView(QGraphicsView):
             self._last_scene_pos = self.mapToScene(event.position().toPoint())
             event.accept()
             return
-
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -58,7 +57,6 @@ class AlignmentPreviewView(QGraphicsView):
             self.bandDragged.emit(float(delta.x()), float(delta.y()))
             event.accept()
             return
-
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -66,7 +64,6 @@ class AlignmentPreviewView(QGraphicsView):
             self._last_scene_pos = None
             event.accept()
             return
-
         super().mouseReleaseEvent(event)
 
 
@@ -109,13 +106,6 @@ class AlignmentStep(QWidget):
         root.addWidget(title)
         root.addWidget(subtitle)
 
-        main_splitter = QSplitter(Qt.Horizontal)
-
-        control_panel = QWidget()
-        control_layout = QVBoxLayout(control_panel)
-        control_layout.setContentsMargins(0, 0, 0, 0)
-        control_layout.setSpacing(18)
-
         control_card = QFrame()
         control_card.setObjectName("contentCard")
         control_grid = QGridLayout(control_card)
@@ -151,26 +141,24 @@ class AlignmentStep(QWidget):
             self.step_combo.addItem(f"{value:g} px", value)
         self.step_combo.setCurrentIndex(2)
 
-        control_grid.addWidget(control_title, 0, 0, 1, 2)
+        control_grid.addWidget(control_title, 0, 0, 1, 6)
+
         control_grid.addWidget(QLabel("Reference band"), 1, 0)
         control_grid.addWidget(self.reference_band_combo, 1, 1)
-        control_grid.addWidget(QLabel("Band to adjust"), 2, 0)
-        control_grid.addWidget(self.adjust_band_combo, 2, 1)
-        control_grid.addWidget(QLabel("X offset"), 3, 0)
-        control_grid.addWidget(self.x_spin, 3, 1)
-        control_grid.addWidget(QLabel("Y offset"), 4, 0)
-        control_grid.addWidget(self.y_spin, 4, 1)
-        control_grid.addWidget(QLabel("Step size"), 5, 0)
-        control_grid.addWidget(self.step_combo, 5, 1)
 
-        control_panel.setMinimumWidth(340)
-        control_layout.addWidget(control_card)
-        control_layout.addStretch(1)
+        control_grid.addWidget(QLabel("Band to adjust"), 1, 2)
+        control_grid.addWidget(self.adjust_band_combo, 1, 3)
 
-        preview_panel = QWidget()
-        preview_layout = QVBoxLayout(preview_panel)
-        preview_layout.setContentsMargins(0, 0, 0, 0)
-        preview_layout.setSpacing(14)
+        control_grid.addWidget(QLabel("Step size"), 1, 4)
+        control_grid.addWidget(self.step_combo, 1, 5)
+
+        control_grid.addWidget(QLabel("X offset"), 2, 0)
+        control_grid.addWidget(self.x_spin, 2, 1)
+
+        control_grid.addWidget(QLabel("Y offset"), 2, 2)
+        control_grid.addWidget(self.y_spin, 2, 3)
+
+        root.addWidget(control_card)
 
         preview_card = QFrame()
         preview_card.setObjectName("contentCard")
@@ -192,7 +180,7 @@ class AlignmentStep(QWidget):
         preview_card_layout.addWidget(self.preview_info)
         preview_card_layout.addWidget(self.preview_view, 1)
 
-        preview_layout.addWidget(preview_card, 1)
+        root.addWidget(preview_card, 1)
 
         actions_card = QFrame()
         actions_card.setObjectName("contentCard")
@@ -231,14 +219,7 @@ class AlignmentStep(QWidget):
         actions_layout.addWidget(self.zoom_in_button)
         actions_layout.addWidget(self.zoom_out_button)
 
-        preview_layout.addWidget(actions_card)
-
-        main_splitter.addWidget(control_panel)
-        main_splitter.addWidget(preview_panel)
-        main_splitter.setStretchFactor(0, 0)
-        main_splitter.setStretchFactor(1, 1)
-
-        root.addWidget(main_splitter, 1)
+        root.addWidget(actions_card)
 
         summary_card = QFrame()
         summary_card.setObjectName("contentCard")
@@ -331,7 +312,8 @@ class AlignmentStep(QWidget):
 
         selected = self.selected_object_files_by_band()
 
-        for band, paths in selected.items():
+        for band in sort_bands_recommended(selected.keys()):
+            paths = selected[band]
             arrays = []
 
             for path_text in paths:
@@ -353,10 +335,7 @@ class AlignmentStep(QWidget):
             if not arrays:
                 continue
 
-            if len(arrays) == 1:
-                combined = arrays[0]
-            else:
-                combined = np.nanmedian(np.stack(arrays, axis=0), axis=0)
+            combined = arrays[0] if len(arrays) == 1 else np.nanmedian(np.stack(arrays, axis=0), axis=0)
 
             self.band_arrays[band] = self.normalize_array(combined)
             self.band_counts[band] = len(arrays)
@@ -420,7 +399,7 @@ class AlignmentStep(QWidget):
             }
 
     def populate_controls(self):
-        bands = sorted(self.band_arrays.keys())
+        bands = sort_bands_recommended(self.band_arrays.keys())
 
         self._loading_controls = True
 
@@ -469,16 +448,16 @@ class AlignmentStep(QWidget):
         if not bands:
             return ""
 
-        upper_map = {band.upper(): band for band in bands}
+        normalized_map = {normalize_band_name(band): band for band in bands}
 
-        for candidate in ["LUMINANCE", "L", "V", "G", "R", "B"]:
-            if candidate in upper_map:
-                return upper_map[candidate]
+        for candidate in ["L", "V", "G", "R", "B"]:
+            if candidate in normalized_map:
+                return normalized_map[candidate]
 
         return bands[0]
 
     def display_band(self, band: str) -> str:
-        return "None" if band == "-" else band
+        return band_display_label(band)
 
     def current_reference_band(self) -> str:
         return self.reference_band_combo.currentData() or ""
@@ -636,14 +615,7 @@ class AlignmentStep(QWidget):
             return {}
 
         mapping = project.output_options.get("color_mapping", {}) or {}
-
-        result = {}
-
-        for band in self.band_arrays:
-            item = mapping.get(band, {})
-            result[band] = item.get("hex_color", "#808080")
-
-        return result
+        return {band: mapping.get(band, {}).get("hex_color", "#808080") for band in self.band_arrays}
 
     def hex_to_rgb(self, hex_color: str) -> tuple[float, float, float]:
         value = (hex_color or "#808080").strip().lstrip("#")
@@ -684,7 +656,8 @@ class AlignmentStep(QWidget):
         rgb = np.zeros((height, width, 3), dtype=np.float32)
         colors = self.color_mapping_for_bands()
 
-        for band, image in self.band_arrays.items():
+        for band in sort_bands_recommended(self.band_arrays.keys()):
+            image = self.band_arrays[band]
             offsets = self.band_offsets.setdefault(band, {"x": 0.0, "y": 0.0})
             shifted = self.shifted_array(
                 image,
@@ -702,8 +675,7 @@ class AlignmentStep(QWidget):
         if max_value > 0:
             rgb = rgb / max_value
 
-        rgb = np.clip(rgb, 0, 1)
-        return rgb
+        return np.clip(rgb, 0, 1)
 
     def rgb_to_qimage(self, rgb: np.ndarray) -> QImage:
         image8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
@@ -744,7 +716,7 @@ class AlignmentStep(QWidget):
         self.preview_info.setText(
             f"Reference band: {self.display_band(reference)} | "
             f"Band to adjust: {self.display_band(adjusted)} | "
-            f"Bands in preview: {', '.join(self.display_band(band) for band in sorted(self.band_arrays))}"
+            f"Bands in preview: {', '.join(self.display_band(band) for band in sort_bands_recommended(self.band_arrays))}"
         )
 
         self.fit_preview()
@@ -757,7 +729,7 @@ class AlignmentStep(QWidget):
         self.preview_view.fitInView(self.current_pixmap_item, Qt.KeepAspectRatio)
 
     def populate_summary(self):
-        bands = sorted(self.band_arrays.keys())
+        bands = sort_bands_recommended(self.band_arrays.keys())
         self.summary_table.setRowCount(len(bands))
 
         reference = self.current_reference_band()
