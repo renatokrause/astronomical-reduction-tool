@@ -17,13 +17,14 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QSpinBox,
+    QCheckBox,
     QGraphicsView,
     QGraphicsScene,
     QGraphicsPixmapItem,
 )
 
 from airt.project import autosave_project
-from airt.core.bands import sort_bands_recommended
+from airt.core.bands import sort_bands_recommended, normalize_band_name
 
 
 class BackgroundPreviewView(QGraphicsView):
@@ -91,8 +92,11 @@ class BackgroundStep(QWidget):
         settings_title = QLabel("Correction settings")
         settings_title.setObjectName("sectionTitle")
 
+        self.enabled_check = QCheckBox("Enabled")
+        self.enabled_check.setChecked(True)
+        self.enabled_check.stateChanged.connect(self.on_enabled_changed)
+
         self.mode_combo = QComboBox()
-        self.mode_combo.addItem("None", "none")
         self.mode_combo.addItem("Conservative", "conservative")
         self.mode_combo.addItem("Standard", "standard")
         self.mode_combo.addItem("Custom", "custom")
@@ -127,47 +131,27 @@ class BackgroundStep(QWidget):
         self.scale_spin.valueChanged.connect(self.on_settings_changed)
 
         settings_layout.addWidget(settings_title, 0, 0, 1, 4)
+        settings_layout.addWidget(self.enabled_check, 1, 0, 1, 4)
 
-        settings_layout.addWidget(QLabel("Mode"), 1, 0)
-        settings_layout.addWidget(self.mode_combo, 1, 1)
+        settings_layout.addWidget(QLabel("Mode"), 2, 0)
+        settings_layout.addWidget(self.mode_combo, 2, 1)
 
-        settings_layout.addWidget(QLabel("Apply to"), 1, 2)
-        settings_layout.addWidget(self.apply_to_combo, 1, 3)
+        settings_layout.addWidget(QLabel("Apply to"), 2, 2)
+        settings_layout.addWidget(self.apply_to_combo, 2, 3)
 
-        settings_layout.addWidget(QLabel("Object protection"), 2, 0)
-        settings_layout.addWidget(self.protection_combo, 2, 1)
+        settings_layout.addWidget(QLabel("Object protection"), 3, 0)
+        settings_layout.addWidget(self.protection_combo, 3, 1)
 
-        settings_layout.addWidget(QLabel("Preview"), 2, 2)
-        settings_layout.addWidget(self.view_combo, 2, 3)
+        settings_layout.addWidget(QLabel("Preview"), 3, 2)
+        settings_layout.addWidget(self.view_combo, 3, 3)
 
-        settings_layout.addWidget(QLabel("Strength"), 3, 0)
-        settings_layout.addWidget(self.strength_spin, 3, 1)
+        settings_layout.addWidget(QLabel("Strength"), 4, 0)
+        settings_layout.addWidget(self.strength_spin, 4, 1)
 
-        settings_layout.addWidget(QLabel("Background scale"), 3, 2)
-        settings_layout.addWidget(self.scale_spin, 3, 3)
+        settings_layout.addWidget(QLabel("Background scale"), 4, 2)
+        settings_layout.addWidget(self.scale_spin, 4, 3)
 
         root.addWidget(settings_card)
-
-        preview_card = QFrame()
-        preview_card.setObjectName("contentCard")
-        preview_layout = QVBoxLayout(preview_card)
-        preview_layout.setContentsMargins(18, 18, 18, 18)
-        preview_layout.setSpacing(10)
-
-        self.preview_info = QLabel("Background correction preview will appear here.")
-        self.preview_info.setObjectName("mutedText")
-        self.preview_info.setWordWrap(True)
-
-        self.preview_scene = QGraphicsScene(self)
-        self.preview_view = BackgroundPreviewView()
-        self.preview_view.setScene(self.preview_scene)
-        self.preview_view.setBackgroundBrush(Qt.black)
-        self.preview_view.setMinimumHeight(620)
-
-        preview_layout.addWidget(self.preview_info)
-        preview_layout.addWidget(self.preview_view, 1)
-
-        root.addWidget(preview_card, 1)
 
         actions_card = QFrame()
         actions_card.setObjectName("contentCard")
@@ -203,6 +187,27 @@ class BackgroundStep(QWidget):
         actions_layout.addWidget(self.zoom_out_button)
 
         root.addWidget(actions_card)
+
+        preview_card = QFrame()
+        preview_card.setObjectName("contentCard")
+        preview_layout = QVBoxLayout(preview_card)
+        preview_layout.setContentsMargins(18, 18, 18, 18)
+        preview_layout.setSpacing(10)
+
+        self.preview_info = QLabel("Background correction preview will appear here.")
+        self.preview_info.setObjectName("mutedText")
+        self.preview_info.setWordWrap(True)
+
+        self.preview_scene = QGraphicsScene(self)
+        self.preview_view = BackgroundPreviewView()
+        self.preview_view.setScene(self.preview_scene)
+        self.preview_view.setBackgroundBrush(Qt.black)
+        self.preview_view.setMinimumHeight(620)
+
+        preview_layout.addWidget(self.preview_info)
+        preview_layout.addWidget(self.preview_view, 1)
+
+        root.addWidget(preview_card, 1)
 
         info = QFrame()
         info.setObjectName("infoCard")
@@ -321,6 +326,7 @@ class BackgroundStep(QWidget):
         if project:
             saved = project.output_options.get("background_correction", {}) or {}
 
+        default_enabled = bool(saved.get("enabled", True))
         default_mode = saved.get("mode", self.default_mode_from_preset())
         default_apply_to = saved.get("apply_to", "per_band")
         default_protection = saved.get("object_protection", self.default_protection_from_preset())
@@ -329,6 +335,7 @@ class BackgroundStep(QWidget):
 
         self._loading_controls = True
 
+        self.enabled_check.setChecked(default_enabled)
         self.set_combo_by_data(self.mode_combo, default_mode)
         self.set_combo_by_data(self.apply_to_combo, default_apply_to)
         self.set_combo_by_data(self.protection_combo, default_protection)
@@ -339,7 +346,7 @@ class BackgroundStep(QWidget):
 
         self._loading_controls = False
 
-        self.update_custom_enabled()
+        self.update_control_enabled_state()
 
     def set_combo_by_data(self, combo: QComboBox, value: str):
         index = combo.findData(value)
@@ -374,15 +381,9 @@ class BackgroundStep(QWidget):
         if preset in {"nebula", "extended_galaxy"}:
             return "high"
 
-        if preset == "star_field":
-            return "medium"
-
         return "medium"
 
     def default_strength(self, mode: str) -> float:
-        if mode == "none":
-            return 0.0
-
         if mode == "conservative":
             return 0.35
 
@@ -400,11 +401,19 @@ class BackgroundStep(QWidget):
 
         return 128
 
+    def on_enabled_changed(self):
+        if self._loading_controls:
+            return
+
+        self.update_control_enabled_state()
+        self.recompute_preview()
+        self.persist_settings()
+
     def on_mode_changed(self):
         if self._loading_controls:
             return
 
-        mode = self.mode_combo.currentData() or "none"
+        mode = self.mode_combo.currentData() or "conservative"
 
         self._loading_controls = True
 
@@ -414,14 +423,18 @@ class BackgroundStep(QWidget):
 
         self._loading_controls = False
 
-        self.update_custom_enabled()
+        self.update_control_enabled_state()
         self.recompute_preview()
         self.persist_settings()
 
-    def update_custom_enabled(self):
-        mode = self.mode_combo.currentData() or "none"
-        custom = mode == "custom"
+    def update_control_enabled_state(self):
+        enabled = self.enabled_check.isChecked()
+        mode = self.mode_combo.currentData() or "conservative"
+        custom = enabled and mode == "custom"
 
+        self.mode_combo.setEnabled(enabled)
+        self.apply_to_combo.setEnabled(enabled)
+        self.protection_combo.setEnabled(enabled)
         self.strength_spin.setEnabled(custom)
         self.scale_spin.setEnabled(custom)
 
@@ -437,6 +450,7 @@ class BackgroundStep(QWidget):
 
         self._loading_controls = True
 
+        self.enabled_check.setChecked(True)
         self.set_combo_by_data(self.mode_combo, mode)
         self.set_combo_by_data(self.apply_to_combo, "per_band")
         self.set_combo_by_data(self.protection_combo, self.default_protection_from_preset())
@@ -446,7 +460,7 @@ class BackgroundStep(QWidget):
 
         self._loading_controls = False
 
-        self.update_custom_enabled()
+        self.update_control_enabled_state()
         self.recompute_preview()
         self.persist_settings()
 
@@ -481,7 +495,24 @@ class BackgroundStep(QWidget):
             return {}
 
         mapping = project.output_options.get("color_mapping", {}) or {}
-        return {band: mapping.get(band, {}).get("hex_color", "#808080") for band in self.band_arrays}
+
+        result = {}
+
+        for band in self.band_arrays:
+            normalized = normalize_band_name(band)
+
+            direct = mapping.get(band, {})
+            normalized_match = None
+
+            for saved_band, saved_mapping in mapping.items():
+                if normalize_band_name(saved_band) == normalized:
+                    normalized_match = saved_mapping
+                    break
+
+            item = direct or normalized_match or {}
+            result[band] = item.get("hex_color", "#808080")
+
+        return result
 
     def hex_to_rgb(self, hex_color: str) -> tuple[float, float, float]:
         value = (hex_color or "#808080").strip().lstrip("#")
@@ -546,7 +577,6 @@ class BackgroundStep(QWidget):
 
     def estimate_background_channel(self, channel: np.ndarray, block_size: int) -> np.ndarray:
         height, width = channel.shape
-
         block_size = max(8, int(block_size))
 
         pad_h = (block_size - height % block_size) % block_size
@@ -584,12 +614,18 @@ class BackgroundStep(QWidget):
         background = np.repeat(np.repeat(coarse, block_size, axis=0), block_size, axis=1)
         background = background[:height, :width]
 
+        try:
+            from scipy.ndimage import gaussian_filter
+
+            sigma = max(1.0, block_size / 3.0)
+            background = gaussian_filter(background, sigma=sigma)
+        except Exception:
+            pass
+
         return background.astype(np.float32, copy=False)
 
     def correct_background(self, rgb: np.ndarray) -> np.ndarray:
-        mode = self.mode_combo.currentData() or "none"
-
-        if mode == "none":
+        if not self.enabled_check.isChecked():
             return rgb.copy()
 
         strength = float(self.strength_spin.value())
@@ -614,7 +650,6 @@ class BackgroundStep(QWidget):
 
     def recompute_preview(self):
         original = self.composite_rgb()
-
         self.preview_original = original
 
         if original is None:
@@ -664,12 +699,13 @@ class BackgroundStep(QWidget):
         self.current_pixmap_item = self.preview_scene.addPixmap(pixmap)
         self.preview_scene.setSceneRect(self.current_pixmap_item.boundingRect())
 
+        state = "Enabled" if self.enabled_check.isChecked() else "Disabled"
         mode = self.mode_combo.currentText()
         view = self.view_combo.currentText()
         protection = self.protection_combo.currentText()
 
         self.preview_info.setText(
-            f"Mode: {mode} | View: {view} | Protection: {protection} | "
+            f"Background correction: {state} | Mode: {mode} | View: {view} | Protection: {protection} | "
             f"Bands: {', '.join(sort_bands_recommended(self.band_arrays.keys()))}"
         )
 
@@ -701,7 +737,8 @@ class BackgroundStep(QWidget):
         project = self.wizard.ensure_project()
 
         settings = {
-            "mode": self.mode_combo.currentData() or "none",
+            "enabled": bool(self.enabled_check.isChecked()),
+            "mode": self.mode_combo.currentData() or "conservative",
             "apply_to": self.apply_to_combo.currentData() or "per_band",
             "object_protection": self.protection_combo.currentData() or "medium",
             "preview": self.view_combo.currentData() or "corrected",
@@ -710,7 +747,7 @@ class BackgroundStep(QWidget):
         }
 
         project.output_options["background_correction"] = settings
-        project.background_mode = settings["mode"]
+        project.background_mode = "disabled" if not settings["enabled"] else settings["mode"]
         project.update_timestamp()
 
     def persist_settings(self):
