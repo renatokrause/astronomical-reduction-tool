@@ -293,3 +293,16 @@ def apply_dark_theme(widget: QWidget) -> None:
 
 
 
+
+
+QFrame#actionCard {
+    background-color: #101B2D;
+    border: 1px solid #294466;
+    border-radius: 18px;
+}
+
+
+QFrame#actionCard:hover {
+    background-color: #173153;
+    border: 1px solid #58A0FF;
+}

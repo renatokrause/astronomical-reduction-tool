@@ -12,6 +12,7 @@ class ActionCard(QFrame):
 
     def __init__(self, title: str, description: str, icon_path: str | Path | None = None, primary: bool = False, parent=None):
         super().__init__(parent)
+        self.setFocusPolicy(Qt.NoFocus)
 
         self.setObjectName("actionCardPrimary" if primary else "actionCard")
         self.setCursor(Qt.PointingHandCursor)
